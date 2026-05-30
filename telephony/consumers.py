@@ -5,11 +5,23 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
-from .audio import EXOTEL_SAMPLE_RATE_HZ, b64_audio, chunk_duration_seconds, chunk_pcm, generate_tone_pcm
+from .audio import (
+    EXOTEL_SAMPLE_RATE_HZ,
+    b64_audio,
+    chunk_duration_seconds,
+    chunk_pcm,
+    generate_tone_pcm,
+    load_wav_pcm,
+)
+
+# Path to the hold music / greeting WAV bundled in the project root
+# Resolved relative to this file: telephony/consumers.py -> project root
+PLEASE_WAIT_WAV: Path = Path(__file__).resolve().parent.parent / "please-wait-while-we-connect-your-call.wav"
 
 
 logger = logging.getLogger(__name__)
@@ -26,6 +38,7 @@ class ExotelStreamState:
     inbound_chunks: int = 0
     dtmf_digits: list[str] = field(default_factory=list)
     is_playing: bool = False
+    first_media_logged: bool = False
 
 
 class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
@@ -105,6 +118,18 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
     async def on_media(self, content: dict[str, Any]) -> None:
         self.state.inbound_chunks += 1
         media = content.get("media") or {}
+
+        if not self.state.first_media_logged:
+            self.state.first_media_logged = True
+            logger.info(
+                "FIRST EXOTEL MEDIA PACKET stream_sid=%s call_sid=%s chunk=%s timestamp=%s payload_b64_chars=%s",
+                self.state.stream_sid,
+                self.state.call_sid,
+                media.get("chunk"),
+                media.get("timestamp"),
+                len(media.get("payload", "")),
+            )
+
         logger.debug(
             "Inbound Exotel media stream_sid=%s chunk=%s timestamp=%s payload_bytes_b64=%s",
             self.state.stream_sid,
@@ -140,10 +165,34 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
 
         self.state.is_playing = True
         sample_rate = self.get_sample_rate()
-        pcm = generate_tone_pcm(duration_seconds=10.0, sample_rate=sample_rate)
+
+        # --- Load PCM from the WAV file, fall back to a synthetic tone ---
+        if PLEASE_WAIT_WAV.exists():
+            logger.info(
+                "Loading hold-music WAV file path=%s stream_sid=%s",
+                PLEASE_WAIT_WAV,
+                self.state.stream_sid,
+            )
+            pcm = load_wav_pcm(PLEASE_WAIT_WAV, target_sample_rate=sample_rate)
+        else:
+            logger.warning(
+                "WAV file not found at %s — falling back to synthetic tone stream_sid=%s",
+                PLEASE_WAIT_WAV,
+                self.state.stream_sid,
+            )
+            pcm = generate_tone_pcm(duration_seconds=10.0, sample_rate=sample_rate)
+
+        chunks = list(chunk_pcm(pcm))
+
+        logger.info(
+            "Streaming hold-music to caller stream_sid=%s sample_rate=%s chunks=%s",
+            self.state.stream_sid,
+            sample_rate,
+            len(chunks),
+        )
 
         try:
-            for chunk in chunk_pcm(pcm):
+            for chunk in chunks:
                 await self.send_json(
                     {
                         "event": "media",
@@ -157,9 +206,10 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 {
                     "event": "mark",
                     "stream_sid": self.state.stream_sid,
-                    "mark": {"name": "qwr-demo-music-complete"},
+                    "mark": {"name": "qwr-please-wait-complete"},
                 }
             )
+            logger.info("Finished streaming hold-music stream_sid=%s", self.state.stream_sid)
         except asyncio.CancelledError:
             logger.info("Exotel playback cancelled stream_sid=%s", self.state.stream_sid)
         finally:

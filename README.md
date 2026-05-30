@@ -25,7 +25,21 @@ Configure the Voicebot Applet URL as:
 wss://<your-public-domain>/ws/exotel/voicebot/
 ```
 
-For local testing, expose Daphne through a TLS tunnel such as ngrok or Cloudflare Tunnel and use the resulting `wss://` URL. Exotel sends JSON WebSocket messages and the consumer currently handles:
+For local testing, expose Daphne through a TLS tunnel such as ngrok, Cloudflare Tunnel, or grout. Daphne itself is plain HTTP locally, so point the tunnel at `http://localhost:8000`, not `https://localhost:8000`.
+
+Example with grout:
+
+```bash
+grout http://localhost:8000 prashant
+```
+
+If grout prints a public route such as `https://prashant.jaxl.io`, configure Exotel with:
+
+```text
+wss://prashant.jaxl.io/ws/exotel/voicebot/
+```
+
+Exotel sends JSON WebSocket messages and the consumer currently handles:
 
 - `connected`
 - `start`

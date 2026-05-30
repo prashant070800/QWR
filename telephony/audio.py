@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import audioop
 import base64
 import math
 import struct
+import wave
 from collections.abc import Iterable
+from pathlib import Path
 
 
 EXOTEL_SAMPLE_RATE_HZ = 8000
@@ -55,3 +58,44 @@ def chunk_duration_seconds(
 ) -> float:
     bytes_per_second = sample_rate * sample_width_bytes * channels
     return len(chunk) / bytes_per_second
+
+
+def load_wav_pcm(
+    wav_path: str | Path,
+    target_sample_rate: int = EXOTEL_SAMPLE_RATE_HZ,
+) -> bytes:
+    """Read *wav_path* and return little-endian signed 16-bit mono PCM.
+
+    The function handles:
+    - multi-channel → mono downmix (via audioop.tomono)
+    - sample-rate conversion (via audioop.ratecv)
+    - sample-width normalisation to 16-bit (via audioop.lin2lin)
+    """
+    with wave.open(str(wav_path), "rb") as wf:
+        src_channels = wf.getnchannels()
+        src_sample_width = wf.getsampwidth()   # bytes per sample
+        src_sample_rate = wf.getframerate()
+        raw = wf.readframes(wf.getnframes())
+
+    # 1. Normalise width to 2 bytes (16-bit)
+    if src_sample_width != 2:
+        raw = audioop.lin2lin(raw, src_sample_width, 2)
+        src_sample_width = 2
+
+    # 2. Downmix to mono
+    if src_channels > 1:
+        raw = audioop.tomono(raw, src_sample_width, 0.5, 0.5)
+        src_channels = 1
+
+    # 3. Resample to target rate if necessary
+    if src_sample_rate != target_sample_rate:
+        raw, _ = audioop.ratecv(
+            raw,
+            src_sample_width,
+            src_channels,
+            src_sample_rate,
+            target_sample_rate,
+            None,
+        )
+
+    return raw

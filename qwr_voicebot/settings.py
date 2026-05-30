@@ -69,3 +69,44 @@ TEMPLATES = [
         },
     }
 ]
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "[{asctime}] {levelname} {name} — {message}",
+            "style": "{",
+            "datefmt": "%Y-%m-%d %H:%M:%S",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "WARNING",
+    },
+    "loggers": {
+        # Your telephony app — show everything
+        "telephony": {
+            "handlers": ["console"],
+            "level": "DEBUG",
+            "propagate": False,
+        },
+        # Channels / Daphne lifecycle events
+        "django.channels": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "daphne": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
