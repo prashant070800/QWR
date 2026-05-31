@@ -14,10 +14,10 @@ class AudioTests(TestCase):
 
         chunks = list(chunk_pcm(pcm))
 
-        self.assertEqual(len(chunks), 1)
-        self.assertEqual(len(chunks[0]), EXOTEL_CHUNK_BYTES)
+        self.assertEqual(len(chunks), 10)
+        self.assertTrue(all(len(chunk) == EXOTEL_CHUNK_BYTES for chunk in chunks))
 
     def test_chunk_duration_matches_sample_rate(self):
         duration = chunk_duration_seconds(b"\x00" * EXOTEL_CHUNK_BYTES, sample_rate=8000)
 
-        self.assertEqual(duration, 0.2)
+        self.assertEqual(duration, 0.02)

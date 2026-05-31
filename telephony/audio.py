@@ -14,7 +14,14 @@ from pathlib import Path
 EXOTEL_SAMPLE_RATE_HZ = 8000
 EXOTEL_SAMPLE_WIDTH_BYTES = 2
 EXOTEL_CHANNELS = 1
-EXOTEL_CHUNK_BYTES = 3200
+EXOTEL_FRAME_MS = 20
+EXOTEL_CHUNK_BYTES = (
+    EXOTEL_SAMPLE_RATE_HZ
+    * EXOTEL_SAMPLE_WIDTH_BYTES
+    * EXOTEL_CHANNELS
+    * EXOTEL_FRAME_MS
+    // 1000
+)
 
 
 def generate_tone_pcm(
@@ -38,6 +45,9 @@ def generate_tone_pcm(
 
 def chunk_pcm(pcm: bytes, chunk_size: int = EXOTEL_CHUNK_BYTES) -> Iterable[bytes]:
     """Yield Exotel-friendly chunks, padding the final frame if needed."""
+
+    if chunk_size <= 0:
+        raise ValueError(f"chunk_size must be positive, got {chunk_size}")
 
     for offset in range(0, len(pcm), chunk_size):
         chunk = pcm[offset : offset + chunk_size]
