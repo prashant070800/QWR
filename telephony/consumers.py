@@ -76,6 +76,10 @@ class ExotelStreamState:
     audio_buffer: bytearray = field(default_factory=bytearray)
     silent_chunk_count: int = 0
     speech_chunk_count: int = 0
+    last_inbound_chunk: str | int | None = None
+    last_inbound_timestamp: str | int | None = None
+    last_inbound_payload_chars: int = 0
+    last_inbound_pcm_bytes: int = 0
     is_processing_stt: bool = False
     caller_transcripts: list[str] = field(default_factory=list)
     agent_replies: list[str] = field(default_factory=list)
@@ -86,6 +90,12 @@ class ExotelStreamState:
     # Playback
     is_stopped: bool = False
     is_playing: bool = False
+    playback_mark: str | None = None
+    playback_packet_index: int = 0
+    playback_total_packets: int = 0
+    last_outbound_payload_chars: int = 0
+    last_outbound_pcm_bytes: int = 0
+    last_outbound_send_monotonic: float | None = None
     outbound_chunks: int = 0
     outbound_timestamp_ms: int = 0
     outbound_sequence_number: int = 1
@@ -182,7 +192,17 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             self.state.log_prefix,
             content.get("event"),
         )
-        await super().send_json(content, close=close)
+        try:
+            await super().send_json(content, close=close)
+        except Exception:
+            logger.exception(
+                "%s Failed sending event=%s close=%s state=%s",
+                self.state.log_prefix,
+                content.get("event"),
+                close,
+                self._runtime_snapshot(),
+            )
+            raise
 
     # ------------------------------------------------------------------
     # Exotel event handlers
@@ -249,6 +269,9 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             len(payload_b64),
             self.state.inbound_chunks,
         )
+        self.state.last_inbound_chunk = media.get("chunk")
+        self.state.last_inbound_timestamp = media.get("timestamp")
+        self.state.last_inbound_payload_chars = len(payload_b64)
 
         if payload_b64:
             try:
@@ -269,6 +292,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 )
                 raise ValueError(f"Inbound PCM is not 16-bit aligned: {len(pcm_chunk)} bytes")
 
+            self.state.last_inbound_pcm_bytes = len(pcm_chunk)
             self.state.audio_buffer.extend(pcm_chunk)
 
             if _is_silent(pcm_chunk):
@@ -278,6 +302,13 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 self.state.silent_chunk_count = 0
                 self.state.speech_chunk_count += 1
                 self._cancel_playback_for_barge_in()
+
+            if self.state.inbound_chunks % 50 == 0:
+                logger.info(
+                    "%s 🎧 Inbound audio snapshot: %s",
+                    self.state.log_prefix,
+                    self._runtime_snapshot(),
+                )
 
         sample_rate   = self.get_sample_rate()
         silence_limit = settings.stt_silence_chunks
@@ -331,12 +362,22 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         logger.info("%s 🛑 Exotel clear — stopped local playback", self.state.log_prefix)
 
     async def on_stop(self, content: dict[str, Any]) -> None:
+        logger.info(
+            "%s 🧭 Runtime snapshot before Exotel stop handling: %s",
+            self.state.log_prefix,
+            self._runtime_snapshot(),
+        )
         self.state.is_stopped = True
         self._cancel_playback("Exotel stop")
         logger.info(
             "%s 🛑 Exotel stop: %s",
             self.state.log_prefix,
             content.get("stop"),
+        )
+        logger.info(
+            "%s 🧭 Runtime snapshot after Exotel stop handling: %s",
+            self.state.log_prefix,
+            self._runtime_snapshot(),
         )
         await self.close()
 
@@ -560,6 +601,9 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         total_chunks = len(chunks)
         total_bytes  = len(pcm)
         self.state.is_playing = True
+        self.state.playback_mark = mark_name
+        self.state.playback_packet_index = 0
+        self.state.playback_total_packets = total_chunks
 
         logger.info(
             "%s 🔊 BEGIN streaming audio → Exotel: "
@@ -590,6 +634,9 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
 
                 chunk_b64  = b64_audio(chunk)
                 chunk_dur  = chunk_duration_seconds(chunk, sample_rate=sample_rate)
+                self.state.playback_packet_index = idx + 1
+                self.state.last_outbound_payload_chars = len(chunk_b64)
+                self.state.last_outbound_pcm_bytes = len(chunk)
                 self.state.outbound_chunks += 1
                 media_chunk = self.state.outbound_chunks
                 media_timestamp = self.state.outbound_timestamp_ms
@@ -625,6 +672,13 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                         },
                     }
                 )
+                self.state.last_outbound_send_monotonic = time.monotonic()
+                if idx == 0 or (idx + 1) % 25 == 0:
+                    logger.info(
+                        "%s 🔊 Outbound playback progress: %s",
+                        self.state.log_prefix,
+                        self._runtime_snapshot(),
+                    )
                 self.state.outbound_timestamp_ms += round(chunk_dur * 1000)
                 await asyncio.sleep(chunk_dur)
 
@@ -665,6 +719,9 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             raise
         finally:
             self.state.is_playing = False
+            self.state.playback_mark = None
+            self.state.playback_packet_index = 0
+            self.state.playback_total_packets = 0
 
     # ------------------------------------------------------------------
     # Helpers
@@ -704,6 +761,36 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             )
         else:
             logger.info("%s 🤖 AGENT replies (0): none", self.state.log_prefix)
+
+    def _runtime_snapshot(self) -> dict[str, Any]:
+        last_send_age_ms = None
+        if self.state.last_outbound_send_monotonic is not None:
+            last_send_age_ms = round(
+                (time.monotonic() - self.state.last_outbound_send_monotonic) * 1000
+            )
+
+        return {
+            "is_stopped": self.state.is_stopped,
+            "is_playing": self.state.is_playing,
+            "is_processing_stt": self.state.is_processing_stt,
+            "playback_mark": self.state.playback_mark,
+            "playback_packet": self.state.playback_packet_index,
+            "playback_total_packets": self.state.playback_total_packets,
+            "outbound_chunks": self.state.outbound_chunks,
+            "outbound_timestamp_ms": self.state.outbound_timestamp_ms,
+            "outbound_sequence_number": self.state.outbound_sequence_number,
+            "last_outbound_pcm_bytes": self.state.last_outbound_pcm_bytes,
+            "last_outbound_payload_chars": self.state.last_outbound_payload_chars,
+            "last_outbound_send_age_ms": last_send_age_ms,
+            "inbound_chunks": self.state.inbound_chunks,
+            "last_inbound_chunk": self.state.last_inbound_chunk,
+            "last_inbound_timestamp": self.state.last_inbound_timestamp,
+            "last_inbound_pcm_bytes": self.state.last_inbound_pcm_bytes,
+            "last_inbound_payload_chars": self.state.last_inbound_payload_chars,
+            "audio_buffer_bytes": len(self.state.audio_buffer),
+            "silent_chunk_count": self.state.silent_chunk_count,
+            "speech_chunk_count": self.state.speech_chunk_count,
+        }
 
     def get_sample_rate(self) -> int:
         raw = self.state.media_format.get("sample_rate")
