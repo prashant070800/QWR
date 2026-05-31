@@ -1,6 +1,6 @@
 # QWR AI Voice Bot
 
-Django + Channels backend for the QWR AI Voice Bot assignment. The first milestone is an Exotel AgentStream / Voicebot WebSocket endpoint that accepts Exotel call events and plays 10 seconds of generated PCM audio back to the caller.
+Django + Channels backend for the QWR AI Voice Bot assignment. The Exotel AgentStream / Voicebot WebSocket endpoint accepts Exotel call events, speaks a TTS greeting, transcribes caller audio, gets an AI reply, and streams synthesized voice back to the caller.
 
 ## Setup
 
@@ -16,6 +16,29 @@ Health check:
 ```bash
 curl http://localhost:8000/health/
 ```
+
+## Provider Setup
+
+Copy `.env.example` to `.env`, then configure one chat provider:
+
+```bash
+# Gemini
+AI_PROVIDER=gemini
+AI_MODEL=gemini-2.0-flash
+GEMINI_API_KEY=...
+
+# ChatGPT / OpenAI
+AI_PROVIDER=openai
+AI_MODEL=gpt-4o-mini
+OPENAI_API_KEY=...
+
+# Anthropic Claude
+AI_PROVIDER=anthropic
+AI_MODEL=claude-3-5-haiku-20241022
+ANTHROPIC_API_KEY=...
+```
+
+For local voice testing, `TTS_PROVIDER=gtts` gives audible speech without a cloud key. `STT_PROVIDER=stub` keeps the pipeline working with canned transcripts; use `deepgram` or `google` for real caller transcription.
 
 ## Exotel Voicebot Applet
 
@@ -49,7 +72,7 @@ Exotel sends JSON WebSocket messages and the consumer currently handles:
 - `clear`
 - `stop`
 
-On `start`, the server sends little-endian signed 16-bit mono PCM audio, base64 encoded in Exotel `media` frames. The audio uses the `start.media_format.sample_rate` when Exotel provides it, falling back to 8 kHz. Frames are sent in 20 ms chunks and paced according to the negotiated sample rate, then followed by a `mark` event named `qwr-greeting-complete`.
+On `start`, the server synthesizes a greeting and sends little-endian signed 16-bit mono PCM audio, base64 encoded in Exotel `media` frames. The audio uses the `start.media_format.sample_rate` when Exotel provides it, falling back to 8 kHz. Frames are sent in 20 ms chunks and paced according to the negotiated sample rate, then followed by a `mark` event named `qwr-greeting-complete`.
 
 ## Current Architecture
 

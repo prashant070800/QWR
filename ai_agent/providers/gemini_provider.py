@@ -12,11 +12,17 @@ from .base import LLMProvider, Message
 
 logger = logging.getLogger(__name__)
 
+GEMINI_FALLBACK_MODELS = (
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b",
+)
+
 
 class GeminiProvider(LLMProvider):
     """LLM provider backed by Google Gemini."""
 
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash-exp") -> None:
+    def __init__(self, api_key: str, model: str = "gemini-2.0-flash") -> None:
         self._api_key = api_key
         self._model = model
         self._client = self._build_client()
@@ -61,8 +67,10 @@ class GeminiProvider(LLMProvider):
             max_tokens,
         )
 
+        model_names = _candidate_model_names(self._model)
+
         # google-generativeai is sync — run in executor to avoid blocking
-        def _sync_call() -> str:
+        def _sync_call() -> tuple[str, str]:
             import google.generativeai as genai  # type: ignore[import-untyped]
 
             model_kwargs: dict = {
@@ -74,25 +82,41 @@ class GeminiProvider(LLMProvider):
             if system_instruction:
                 model_kwargs["system_instruction"] = system_instruction
 
-            model = genai.GenerativeModel(self._model, **model_kwargs)
+            last_error: Exception | None = None
+            for model_name in model_names:
+                try:
+                    model = genai.GenerativeModel(model_name, **model_kwargs)
 
-            if chat_turns:
-                # Use multi-turn chat
-                history = chat_turns[:-1]  # all but last
-                chat = model.start_chat(history=history)
-                last_user_text = chat_turns[-1]["parts"][0] if chat_turns else ""
-                response = chat.send_message(last_user_text)
-            else:
-                response = model.generate_content("")
+                    if chat_turns:
+                        # Use multi-turn chat
+                        history = chat_turns[:-1]  # all but last
+                        chat = model.start_chat(history=history)
+                        last_user_text = chat_turns[-1]["parts"][0] if chat_turns else ""
+                        response = chat.send_message(last_user_text)
+                    else:
+                        response = model.generate_content("")
 
-            return response.text.strip()
+                    return response.text.strip(), model_name
+                except Exception as exc:
+                    if not _is_unavailable_model_error(exc):
+                        raise
+                    last_error = exc
+                    logger.warning(
+                        "Gemini model unavailable model=%s error=%s",
+                        model_name,
+                        exc,
+                    )
+
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("No Gemini model candidates configured")
 
         loop = asyncio.get_event_loop()
-        reply = await loop.run_in_executor(None, _sync_call)
+        reply, model_name = await loop.run_in_executor(None, _sync_call)
 
         logger.info(
             "Gemini reply model=%s length=%d preview=%r",
-            self._model,
+            model_name,
             len(reply),
             reply[:80],
         )
@@ -105,3 +129,21 @@ class GeminiProvider(LLMProvider):
     @property
     def model_name(self) -> str:
         return self._model
+
+
+def _candidate_model_names(primary_model: str) -> list[str]:
+    names = [primary_model, *GEMINI_FALLBACK_MODELS]
+    deduped: list[str] = []
+    for name in names:
+        if name and name not in deduped:
+            deduped.append(name)
+    return deduped
+
+
+def _is_unavailable_model_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "is not found" in message
+        or "not_found" in message
+        or "not supported for generatecontent" in message
+    )

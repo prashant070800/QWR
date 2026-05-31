@@ -41,7 +41,7 @@ class AgentSettings:
     ai_provider: str = field(default_factory=lambda: _env("AI_PROVIDER", "gemini"))
 
     # The exact model string forwarded to the chosen provider's API
-    # Gemini default:   gemini-2.0-flash-exp
+    # Gemini default:   gemini-2.0-flash
     # OpenAI default:   gpt-4o-mini
     # Anthropic default: claude-3-5-haiku-20241022
     ai_model: str = field(
@@ -150,11 +150,11 @@ class AgentSettings:
 def _default_model(provider: str) -> str:
     """Return a sensible default model for each supported provider."""
     defaults = {
-        "gemini": "gemini-2.0-flash-exp",
+        "gemini": "gemini-2.0-flash",
         "openai": "gpt-4o-mini",
         "anthropic": "claude-3-5-haiku-20241022",
     }
-    return defaults.get(provider.lower(), "gemini-2.0-flash-exp")
+    return defaults.get(provider.lower(), "gemini-2.0-flash")
 
 
 # Module-level singleton — import this everywhere

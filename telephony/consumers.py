@@ -4,7 +4,7 @@ Flow
 ----
 1. Exotel connects → we accept.
 2. Exotel sends "start" → capture call metadata, create QWRAgent,
-   stream the hardcoded greeting WAV immediately.
+   synthesize and stream the greeting immediately.
 3. Exotel sends "media" → accumulate inbound PCM.
    After configurable silence (STT_SILENCE_CHUNKS), flush buffer to STT.
 4. Transcript → QWRAgent.chat() → AI reply text.
@@ -20,7 +20,6 @@ import base64
 import logging
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
@@ -38,21 +37,15 @@ from .audio import (
     chunk_duration_seconds,
     chunk_pcm,
     generate_tone_pcm,
-    load_wav_pcm,
 )
 
 logger = logging.getLogger(__name__)
 
-# Greeting text shown in logs — the WAV file is what the caller actually hears
+# Greeting text spoken to the caller through the configured TTS provider.
 HARDCODED_GREETING = "Welcome to QWR! How can I help you today?"
 SUPPORTED_EXOTEL_ENCODINGS = {"raw/slin", "slin", "linear16", "pcm", "base64", ""}
 SUPPORTED_EXOTEL_SAMPLE_RATES = {8000, 16000, 24000}
 BARGE_IN_SPEECH_CHUNKS = 120
-
-# Path to the hold-music / greeting WAV bundled in the project root
-PLEASE_WAIT_WAV: Path = (
-    Path(__file__).resolve().parent.parent / "please-wait-while-we-connect-your-call.wav"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +235,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             stream_sid=self.state.stream_sid,
         )
 
-        # Stream greeting immediately (uses the WAV file — guaranteed audio)
+        # Stream greeting immediately.
         self.playback_task = asyncio.create_task(self._play_greeting())
 
     async def on_media(self, content: dict[str, Any]) -> None:
@@ -320,6 +313,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             and len(self.state.audio_buffer) >= min_buf_bytes
             and not self.state.is_processing_stt
             and not (self.playback_task and not self.playback_task.done())
+            and not self.state.is_playing
         ):
             audio_data = bytes(self.state.audio_buffer)
             self.state.audio_buffer      = bytearray()
@@ -389,9 +383,8 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         """Stream the hardcoded greeting to the caller.
 
         Strategy:
-        1. Try to synthesize greeting text via TTS (gtts/google).
-        2. Fall back to the bundled WAV file.
-        3. Last resort: generate a synthetic tone (always works).
+        1. Try the configured TTS provider.
+        2. Last resort: generate a synthetic tone (always works).
         """
         sample_rate = self.get_sample_rate()
         log_prefix  = self.state.log_prefix
@@ -411,8 +404,6 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         self.state.agent_replies.append(HARDCODED_GREETING)
 
         pcm: bytes = b""
-
-        # --- Attempt TTS synthesis ---
         if settings.tts_provider != "stub":
             try:
                 pcm = await synthesize_speech(
@@ -422,24 +413,16 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                     stream_sid=self.state.stream_sid or "",
                 )
             except Exception as exc:
-                logger.exception("%s TTS error: %s — trying WAV fallback", log_prefix, exc)
-
-        # --- Fall back to WAV file if TTS gave us nothing ---
-        if not pcm:
-            if PLEASE_WAIT_WAV.exists():
-                logger.info(
-                    "%s 🎵 Using bundled WAV for greeting: %s",
+                logger.exception(
+                    "%s Greeting TTS error: %s — generating tone fallback",
                     log_prefix,
-                    PLEASE_WAIT_WAV,
+                    exc,
                 )
-                try:
-                    pcm = load_wav_pcm(PLEASE_WAIT_WAV, target_sample_rate=sample_rate)
-                except Exception as exc:
-                    logger.exception("%s WAV load error: %s", log_prefix, exc)
-            else:
-                logger.warning(
-                    "%s WAV not found at %s — generating tone", log_prefix, PLEASE_WAIT_WAV
-                )
+        else:
+            logger.warning(
+                "%s TTS_PROVIDER=stub produces silence; using tone for audible greeting",
+                log_prefix,
+            )
 
         # --- Last resort: synthetic tone ---
         if not pcm:
@@ -498,10 +481,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                     self.state.log_prefix,
                     exc,
                 )
-                reply = (
-                    "I'm sorry, I had trouble processing that. "
-                    "Please tell me how I can help with QWR."
-                )
+                reply = _provider_error_reply(exc)
                 self.agent._history.append(ConversationTurn(speaker="user", text=transcript))
                 self.agent._history.append(ConversationTurn(speaker="assistant", text=reply))
             self.state.agent_replies.append(reply)
@@ -662,12 +642,9 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
 
                 await self.send_json(
                     {
-                        "event":      "media",
-                        "sequence_number": sequence_number,
+                        "event": "media",
                         "stream_sid": self.state.stream_sid,
-                        "media":      {
-                            "chunk": media_chunk,
-                            "timestamp": str(media_timestamp),
+                        "media": {
                             "payload": chunk_b64,
                         },
                     }
@@ -694,10 +671,9 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 return
             await self.send_json(
                 {
-                    "event":      "mark",
-                    "sequence_number": sequence_number,
+                    "event": "mark",
                     "stream_sid": self.state.stream_sid,
-                    "mark":       {"name": mark_name},
+                    "mark": {"name": mark_name},
                 }
             )
 
@@ -901,6 +877,13 @@ def _parse_exotel_bit_rate(raw: Any) -> int | None:
     if value <= 0:
         raise ValueError(f"Invalid Exotel bit_rate={raw!r}")
     return value * multiplier
+
+
+def _provider_error_reply(exc: Exception) -> str:
+    message = " ".join(str(exc).split())
+    if len(message) > 180:
+        message = message[:177].rstrip() + "..."
+    return f"AI provider error: {type(exc).__name__}. {message}"
 
 
 def _format_transcript(turns: list[dict]) -> str:

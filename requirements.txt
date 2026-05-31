@@ -24,7 +24,7 @@ google-generativeai>=0.8
 openai>=1.0
 
 # Anthropic Claude (optional — set AI_PROVIDER=anthropic)
-# anthropic>=0.30
+anthropic>=0.30
 
 # ── Google Cloud STT + TTS (optional — set STT_PROVIDER=google / TTS_PROVIDER=google) ──
 # google-cloud-speech>=2.0
