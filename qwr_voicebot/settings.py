@@ -1,13 +1,32 @@
-"""Minimal settings for the QWR AI Voice Bot."""
+"""Minimal settings for the QWR AI Voice Bot.
 
+All secrets and tuneable values are read from environment variables.
+Copy `.env.example` to `.env` and fill in your values.
+"""
+
+from __future__ import annotations
+
+import os
 from pathlib import Path
+
+
+def _env(key: str, default: str = "") -> str:
+    """Read an environment variable, with optional python-decouple support."""
+    try:
+        from decouple import config  # type: ignore[import-untyped]
+        return config(key, default=default)
+    except ImportError:
+        return os.environ.get(key, default)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = "dev-only-change-me"
-DEBUG = True
-ALLOWED_HOSTS = ["*"]
+# -------------------------------------------------------------------------
+# Core Django settings
+# -------------------------------------------------------------------------
+SECRET_KEY = _env("DJANGO_SECRET_KEY", "dev-only-change-me-in-production")
+DEBUG = _env("DJANGO_DEBUG", "true").lower() in ("1", "true", "yes")
+ALLOWED_HOSTS = _env("DJANGO_ALLOWED_HOSTS", "*").split(",")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -70,12 +89,17 @@ TEMPLATES = [
     }
 ]
 
+# -------------------------------------------------------------------------
+# Logging — structured with call/stream identifiers
+# -------------------------------------------------------------------------
+LOG_LEVEL = _env("LOG_LEVEL", "DEBUG")
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
         "verbose": {
-            "format": "[{asctime}] {levelname} {name} — {message}",
+            "format": "[{asctime}] {levelname:8s} {name} — {message}",
             "style": "{",
             "datefmt": "%Y-%m-%d %H:%M:%S",
         },
@@ -91,13 +115,19 @@ LOGGING = {
         "level": "WARNING",
     },
     "loggers": {
-        # Your telephony app — show everything
+        # Telephony WebSocket consumer — show everything
         "telephony": {
             "handlers": ["console"],
-            "level": "DEBUG",
+            "level": LOG_LEVEL,
             "propagate": False,
         },
-        # Channels / Daphne lifecycle events
+        # AI agent modules
+        "ai_agent": {
+            "handlers": ["console"],
+            "level": LOG_LEVEL,
+            "propagate": False,
+        },
+        # Channels / Daphne lifecycle
         "django.channels": {
             "handlers": ["console"],
             "level": "INFO",
