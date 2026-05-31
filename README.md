@@ -49,7 +49,7 @@ Exotel sends JSON WebSocket messages and the consumer currently handles:
 - `clear`
 - `stop`
 
-On `start`, the server sends 10 seconds of little-endian signed 16-bit mono PCM audio, base64 encoded in Exotel `media` frames. The audio uses the `start.media_format.sample_rate` when Exotel provides it, falling back to 8 kHz. Frames are sent in 3200-byte chunks and paced according to the negotiated sample rate, then followed by a `mark` event named `qwr-demo-music-complete`.
+On `start`, the server sends little-endian signed 16-bit mono PCM audio, base64 encoded in Exotel `media` frames. The audio uses the `start.media_format.sample_rate` when Exotel provides it, falling back to 8 kHz. Frames are sent in 20 ms chunks and paced according to the negotiated sample rate, then followed by a `mark` event named `qwr-greeting-complete`.
 
 ## Current Architecture
 

@@ -116,9 +116,9 @@ class AgentSettings:
     # ------------------------------------------------------------------ #
     # TTS settings                                                        #
     # ------------------------------------------------------------------ #
-    # "google" | "stub" (stub returns empty audio for testing)
+    # "gtts" | "google" | "stub" (stub returns silent audio for tests)
     tts_provider: str = field(
-        default_factory=lambda: _env("TTS_PROVIDER", "stub")
+        default_factory=lambda: _env("TTS_PROVIDER", "gtts")
     )
     # BCP-47 language code for TTS synthesis
     tts_language_code: str = field(

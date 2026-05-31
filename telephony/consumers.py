@@ -25,26 +25,29 @@ from typing import Any
 
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
-from ai_agent.agent import QWRAgent
+from ai_agent.agent import ConversationTurn, QWRAgent
 from ai_agent.config import settings
 from ai_agent.stt import transcribe_audio
 from ai_agent.tts import synthesize_speech
+
 from .audio import (
     EXOTEL_CHANNELS,
-    EXOTEL_CHUNK_BYTES,
-    EXOTEL_SAMPLE_WIDTH_BYTES,
     EXOTEL_SAMPLE_RATE_HZ,
+    EXOTEL_SAMPLE_WIDTH_BYTES,
     b64_audio,
     chunk_duration_seconds,
     chunk_pcm,
-    load_wav_pcm,
     generate_tone_pcm,
+    load_wav_pcm,
 )
 
 logger = logging.getLogger(__name__)
 
 # Greeting text shown in logs — the WAV file is what the caller actually hears
 HARDCODED_GREETING = "Welcome to QWR! How can I help you today?"
+SUPPORTED_EXOTEL_ENCODINGS = {"raw/slin", "slin", "linear16", "pcm", "base64", ""}
+SUPPORTED_EXOTEL_SAMPLE_RATES = {8000, 16000, 24000}
+BARGE_IN_SPEECH_CHUNKS = 120
 
 # Path to the hold-music / greeting WAV bundled in the project root
 PLEASE_WAIT_WAV: Path = (
@@ -72,12 +75,16 @@ class ExotelStreamState:
     inbound_chunks: int = 0
     audio_buffer: bytearray = field(default_factory=bytearray)
     silent_chunk_count: int = 0
+    speech_chunk_count: int = 0
     is_processing_stt: bool = False
+    caller_transcripts: list[str] = field(default_factory=list)
+    agent_replies: list[str] = field(default_factory=list)
 
     # DTMF
     dtmf_digits: list[str] = field(default_factory=list)
 
     # Playback
+    is_stopped: bool = False
     is_playing: bool = False
     outbound_chunks: int = 0
     outbound_timestamp_ms: int = 0
@@ -117,6 +124,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         logger.info("✅ Accepted Exotel WebSocket connection (awaiting 'start' event)")
 
     async def disconnect(self, close_code: int) -> None:
+        self.state.is_stopped = True
         for task in (self.playback_task, self.ai_task):
             if task and not task.done():
                 task.cancel()
@@ -131,6 +139,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             self.state.inbound_chunks,
             "".join(self.state.dtmf_digits),
         )
+        self._log_call_summary()
 
         if self.agent:
             transcript = self.agent.get_transcript()
@@ -264,8 +273,11 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
 
             if _is_silent(pcm_chunk):
                 self.state.silent_chunk_count += 1
+                self.state.speech_chunk_count = 0
             else:
                 self.state.silent_chunk_count = 0
+                self.state.speech_chunk_count += 1
+                self._cancel_playback_for_barge_in()
 
         sample_rate   = self.get_sample_rate()
         silence_limit = settings.stt_silence_chunks
@@ -315,12 +327,12 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         logger.info("%s 🏷  Mark received: %s", self.state.log_prefix, mark_name)
 
     async def on_clear(self, content: dict[str, Any]) -> None:
-        if self.playback_task and not self.playback_task.done():
-            self.playback_task.cancel()
-        self.state.is_playing = False
+        self._cancel_playback("Exotel clear")
         logger.info("%s 🛑 Exotel clear — stopped local playback", self.state.log_prefix)
 
     async def on_stop(self, content: dict[str, Any]) -> None:
+        self.state.is_stopped = True
+        self._cancel_playback("Exotel stop")
         logger.info(
             "%s 🛑 Exotel stop: %s",
             self.state.log_prefix,
@@ -353,9 +365,9 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         # Record greeting in agent history
         if self.agent:
             self.agent._history.append(
-                __import__("ai_agent.agent", fromlist=["ConversationTurn"])
-                .ConversationTurn(speaker="assistant", text=HARDCODED_GREETING)
+                ConversationTurn(speaker="assistant", text=HARDCODED_GREETING)
             )
+        self.state.agent_replies.append(HARDCODED_GREETING)
 
         pcm: bytes = b""
 
@@ -425,8 +437,9 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 )
                 return
 
+            self.state.caller_transcripts.append(transcript)
             logger.info(
-                "%s 📝 STT transcript: %r",
+                "%s 📝 CUSTOMER transcript: %r",
                 self.state.log_prefix,
                 transcript,
             )
@@ -436,13 +449,34 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 logger.error("%s Agent not initialised", self.state.log_prefix)
                 return
 
-            reply = await self.agent.chat(transcript)
+            try:
+                reply = await self.agent.chat(transcript)
+            except Exception as exc:
+                logger.exception(
+                    "%s Agent failed to generate reply: %s",
+                    self.state.log_prefix,
+                    exc,
+                )
+                reply = (
+                    "I'm sorry, I had trouble processing that. "
+                    "Please tell me how I can help with QWR."
+                )
+                self.agent._history.append(ConversationTurn(speaker="user", text=transcript))
+                self.agent._history.append(ConversationTurn(speaker="assistant", text=reply))
+            self.state.agent_replies.append(reply)
 
             logger.info(
-                "%s 🤖 AI reply: %r",
+                "%s 🤖 AGENT reply text: %r",
                 self.state.log_prefix,
                 reply,
             )
+
+            if self.state.is_stopped:
+                logger.info(
+                    "%s Call already stopped — not synthesizing agent voice",
+                    self.state.log_prefix,
+                )
+                return
 
             # Step 3: TTS
             pcm = await synthesize_speech(
@@ -457,6 +491,13 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 self.state.log_prefix,
                 len(pcm),
             )
+
+            if self.state.is_stopped:
+                logger.info(
+                    "%s Call stopped after TTS — not streaming agent voice",
+                    self.state.log_prefix,
+                )
+                return
 
             # Step 4: stream audio
             await self._stream_pcm_to_exotel(pcm, mark_name="qwr-reply-complete")
@@ -482,6 +523,14 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
 
         Logs every outbound packet with chunk index and byte count.
         """
+        if self.state.is_stopped:
+            logger.info(
+                "%s Not streaming audio mark=%s because call is stopped",
+                self.state.log_prefix,
+                mark_name,
+            )
+            return
+
         if not self.state.stream_sid:
             logger.error(
                 "%s Cannot stream audio — stream_sid not yet known",
@@ -529,6 +578,16 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
 
         try:
             for idx, chunk in enumerate(chunks):
+                if self.state.is_stopped:
+                    logger.info(
+                        "%s Stopping audio stream mark=%s at packet=%d/%d; call is stopped",
+                        self.state.log_prefix,
+                        mark_name,
+                        idx + 1,
+                        total_chunks,
+                    )
+                    return
+
                 chunk_b64  = b64_audio(chunk)
                 chunk_dur  = chunk_duration_seconds(chunk, sample_rate=sample_rate)
                 self.state.outbound_chunks += 1
@@ -566,12 +625,19 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                         },
                     }
                 )
-                self.state.outbound_timestamp_ms += int(round(chunk_dur * 1000))
+                self.state.outbound_timestamp_ms += round(chunk_dur * 1000)
                 await asyncio.sleep(chunk_dur)
 
             # Send mark
             sequence_number = self.state.outbound_sequence_number
             self.state.outbound_sequence_number += 1
+            if self.state.is_stopped:
+                logger.info(
+                    "%s Skipping mark=%s because call is stopped",
+                    self.state.log_prefix,
+                    mark_name,
+                )
+                return
             await self.send_json(
                 {
                     "event":      "mark",
@@ -603,6 +669,41 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _cancel_playback_for_barge_in(self) -> None:
+        if (
+            self.playback_task
+            and not self.playback_task.done()
+            and self.state.speech_chunk_count >= BARGE_IN_SPEECH_CHUNKS
+        ):
+            self._cancel_playback("caller speech detected")
+
+    def _cancel_playback(self, reason: str) -> None:
+        if self.playback_task and not self.playback_task.done():
+            self.playback_task.cancel()
+            logger.info("%s Playback cancelled: %s", self.state.log_prefix, reason)
+        self.state.is_playing = False
+
+    def _log_call_summary(self) -> None:
+        if self.state.caller_transcripts:
+            logger.info(
+                "%s 🧑 CUSTOMER transcripts (%d):\n%s",
+                self.state.log_prefix,
+                len(self.state.caller_transcripts),
+                _format_lines(self.state.caller_transcripts),
+            )
+        else:
+            logger.info("%s 🧑 CUSTOMER transcripts (0): none", self.state.log_prefix)
+
+        if self.state.agent_replies:
+            logger.info(
+                "%s 🤖 AGENT replies (%d):\n%s",
+                self.state.log_prefix,
+                len(self.state.agent_replies),
+                _format_lines(self.state.agent_replies),
+            )
+        else:
+            logger.info("%s 🤖 AGENT replies (0): none", self.state.log_prefix)
 
     def get_sample_rate(self) -> int:
         raw = self.state.media_format.get("sample_rate")
@@ -641,7 +742,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
 
     def _validate_media_format(self) -> None:
         encoding = str(self.state.media_format.get("encoding") or "raw/slin").lower()
-        if encoding not in {"raw/slin", "slin", "linear16", "pcm", ""}:
+        if encoding not in SUPPORTED_EXOTEL_ENCODINGS:
             logger.error(
                 "%s Unsupported Exotel encoding=%r media_format=%s",
                 self.state.log_prefix,
@@ -651,7 +752,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             raise ValueError(f"Unsupported Exotel media encoding={encoding!r}")
 
         sample_rate = self.get_sample_rate()
-        if sample_rate not in {8000, 16000, 24000}:
+        if sample_rate not in SUPPORTED_EXOTEL_SAMPLE_RATES:
             logger.error(
                 "%s Unsupported Exotel sample_rate=%d media_format=%s",
                 self.state.log_prefix,
@@ -659,6 +760,20 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 self.state.media_format,
             )
             raise ValueError(f"Unsupported Exotel sample_rate={sample_rate}")
+
+        expected_bit_rate = sample_rate * EXOTEL_CHANNELS * EXOTEL_SAMPLE_WIDTH_BYTES * 8
+        bit_rate = _parse_exotel_bit_rate(self.state.media_format.get("bit_rate"))
+        if bit_rate is not None and bit_rate != expected_bit_rate:
+            logger.error(
+                "%s Unsupported Exotel bit_rate=%d expected_bit_rate=%d media_format=%s",
+                self.state.log_prefix,
+                bit_rate,
+                expected_bit_rate,
+                self.state.media_format,
+            )
+            raise ValueError(
+                f"Unsupported Exotel bit_rate={bit_rate}; expected {expected_bit_rate}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -679,6 +794,28 @@ def _is_silent(pcm_chunk: bytes, threshold: int = 200) -> bool:
     return rms < threshold
 
 
+def _parse_exotel_bit_rate(raw: Any) -> int | None:
+    if raw is None or raw == "":
+        return None
+
+    text = str(raw).strip().lower()
+    multiplier = 1
+    if text.endswith("kbps"):
+        multiplier = 1000
+        text = text.removesuffix("kbps")
+    elif text.endswith("bps"):
+        text = text.removesuffix("bps")
+
+    try:
+        value = int(text.strip())
+    except ValueError as exc:
+        raise ValueError(f"Invalid Exotel bit_rate={raw!r}") from exc
+
+    if value <= 0:
+        raise ValueError(f"Invalid Exotel bit_rate={raw!r}")
+    return value * multiplier
+
+
 def _format_transcript(turns: list[dict]) -> str:
     lines = []
     for turn in turns:
@@ -687,3 +824,7 @@ def _format_transcript(turns: list[dict]) -> str:
         latency = f" [{turn['latency_ms']:.0f}ms]" if turn.get("latency_ms") else ""
         lines.append(f"  {role}{latency}: {text}")
     return "\n".join(lines)
+
+
+def _format_lines(values: list[str]) -> str:
+    return "\n".join(f"  {idx}. {value}" for idx, value in enumerate(values, start=1))
