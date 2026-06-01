@@ -16,11 +16,15 @@ CREATE TABLE IF NOT EXISTS calls (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     call_sid TEXT UNIQUE NOT NULL,
     stream_sid TEXT,
+    from_number TEXT NOT NULL,
+    to_number TEXT,
+    direction TEXT NOT NULL DEFAULT 'incoming' CHECK (direction IN ('incoming', 'outgoing')),
     caller_number TEXT NOT NULL,
     selected_mode TEXT, -- Think, Challenge, Explore, Guide
     duration INTEGER DEFAULT 0, -- Duration in seconds
     status TEXT NOT NULL, -- e.g. initiated, in-progress, completed, failed
     profile_id UUID REFERENCES profiles(id) ON DELETE SET NULL,
+    completed_on TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
@@ -49,7 +53,11 @@ CREATE TABLE IF NOT EXISTS summaries (
 -- Indexes for performance lookups
 CREATE INDEX IF NOT EXISTS idx_profiles_phone ON profiles(phone);
 CREATE INDEX IF NOT EXISTS idx_calls_call_sid ON calls(call_sid);
+CREATE INDEX IF NOT EXISTS idx_calls_from_number ON calls(from_number);
+CREATE INDEX IF NOT EXISTS idx_calls_to_number ON calls(to_number);
+CREATE INDEX IF NOT EXISTS idx_calls_direction ON calls(direction);
 CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
+CREATE INDEX IF NOT EXISTS idx_calls_completed_on ON calls(completed_on);
 CREATE INDEX IF NOT EXISTS idx_transcript_turns_call_id ON transcript_turns(call_id);
 
 -- Postgres GIN full-text search index for searching transcripts

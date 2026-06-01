@@ -6,10 +6,11 @@ import asyncio
 import logging
 from typing import Optional, Any, Dict, List
 import httpx
-from asgiref.sync import sync_to_async
 from django.db import models
+from django.utils import timezone
 
 from ai_agent.config import settings
+from telephony.phone_numbers import to_e164
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ class CallStorage:
 
     async def get_or_create_profile(self, phone: str) -> Dict[str, Any]:
         """Fetch a profile by phone number or create it if not found."""
-        phone = phone.strip()
+        phone = to_e164(phone)
         if self.use_supabase:
             url = f"{self.supabase_url}/rest/v1/profiles?phone=eq.{phone}"
             async with httpx.AsyncClient() as client:
@@ -92,14 +93,12 @@ class CallStorage:
                 return payload
         else:
             from telephony.models import Profile
-            def _db_op():
-                profile, created = Profile.objects.get_or_create(phone=phone)
-                return self._model_to_dict(profile)
-            return await sync_to_async(_db_op)()
+            profile, _created = await Profile.objects.aget_or_create(phone=phone)
+            return self._model_to_dict(profile)
 
     async def update_profile(self, phone: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Update fields in a profile."""
-        phone = phone.strip()
+        phone = to_e164(phone)
         if not updates:
             return await self.get_or_create_profile(phone)
             
@@ -116,19 +115,31 @@ class CallStorage:
             return None
         else:
             from telephony.models import Profile
-            def _db_op():
-                Profile.objects.filter(phone=phone).update(**updates)
-                profile = Profile.objects.filter(phone=phone).first()
-                return self._model_to_dict(profile) if profile else None
-            return await sync_to_async(_db_op)()
+            await Profile.objects.filter(phone=phone).aupdate(**updates)
+            profile = await Profile.objects.filter(phone=phone).afirst()
+            return self._model_to_dict(profile) if profile else None
 
     # ------------------------------------------------------------------
     # Calls API
     # ------------------------------------------------------------------
 
-    async def create_call(self, call_sid: str, stream_sid: str, caller_number: str) -> Dict[str, Any]:
+    async def create_call(
+        self,
+        call_sid: str,
+        stream_sid: str,
+        caller_number: str | None = None,
+        *,
+        from_number: str | None = None,
+        to_number: str | None = None,
+        direction: str = "incoming",
+    ) -> Dict[str, Any]:
         """Create a new call entry linked to the caller's profile."""
-        profile = await self.get_or_create_profile(caller_number)
+        normalized_from = to_e164(from_number or caller_number)
+        normalized_to = to_e164(to_number)
+        normalized_caller = normalized_from
+        normalized_direction = direction if direction in {"incoming", "outgoing"} else "incoming"
+
+        profile = await self.get_or_create_profile(normalized_caller)
         profile_id = profile["id"]
         
         if self.use_supabase:
@@ -137,7 +148,10 @@ class CallStorage:
                 "id": new_id,
                 "call_sid": call_sid,
                 "stream_sid": stream_sid,
-                "caller_number": caller_number,
+                "from_number": normalized_from,
+                "to_number": normalized_to,
+                "direction": normalized_direction,
+                "caller_number": normalized_caller,
                 "status": "initiated",
                 "profile_id": profile_id,
                 "created_at": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
@@ -157,20 +171,29 @@ class CallStorage:
             return payload
         else:
             from telephony.models import Profile, Call
-            def _db_op():
-                prof = Profile.objects.get(id=profile_id)
-                call = Call.objects.create(
-                    call_sid=call_sid,
-                    stream_sid=stream_sid,
-                    caller_number=caller_number,
-                    status="initiated",
-                    profile=prof
-                )
-                return self._model_to_dict(call)
-            return await sync_to_async(_db_op)()
+            prof = await Profile.objects.aget(id=profile_id)
+            call = await Call.objects.acreate(
+                call_sid=call_sid,
+                stream_sid=stream_sid,
+                from_number=normalized_from,
+                to_number=normalized_to,
+                direction=normalized_direction,
+                caller_number=normalized_caller,
+                status="initiated",
+                profile=prof,
+            )
+            return self._model_to_dict(call)
 
     async def update_call(self, call_sid: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Update call properties."""
+        updates = dict(updates)
+        for key in ("from_number", "to_number", "caller_number"):
+            if key in updates:
+                updates[key] = to_e164(updates[key])
+        if updates.get("status") == "completed" and not updates.get("completed_on"):
+            completed_on = timezone.now()
+            updates["completed_on"] = completed_on.isoformat() if self.use_supabase else completed_on
+
         if self.use_supabase:
             url = f"{self.supabase_url}/rest/v1/calls?call_sid=eq.{call_sid}"
             updates["updated_at"] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
@@ -184,11 +207,9 @@ class CallStorage:
             return None
         else:
             from telephony.models import Call
-            def _db_op():
-                Call.objects.filter(call_sid=call_sid).update(**updates)
-                call = Call.objects.filter(call_sid=call_sid).first()
-                return self._model_to_dict(call) if call else None
-            return await sync_to_async(_db_op)()
+            await Call.objects.filter(call_sid=call_sid).aupdate(**updates)
+            call = await Call.objects.filter(call_sid=call_sid).afirst()
+            return self._model_to_dict(call) if call else None
 
     # ------------------------------------------------------------------
     # Transcript Turns API
@@ -244,21 +265,19 @@ class CallStorage:
             return payload
         else:
             from telephony.models import Call, TranscriptTurn
-            def _db_op():
-                call = Call.objects.filter(call_sid=call_sid).first()
-                if not call:
-                    logger.error("Call ID not found for call_sid=%s when inserting turn in Django", call_sid)
-                    return {}
-                seq_number = call.turns.count() + 1
-                turn = TranscriptTurn.objects.create(
-                    call=call,
-                    seq_number=seq_number,
-                    speaker=speaker,
-                    text=text,
-                    latency_ms=latency_ms
-                )
-                return self._model_to_dict(turn)
-            return await sync_to_async(_db_op)()
+            call = await Call.objects.filter(call_sid=call_sid).afirst()
+            if not call:
+                logger.error("Call ID not found for call_sid=%s when inserting turn in Django", call_sid)
+                return {}
+            seq_number = await TranscriptTurn.objects.filter(call=call).acount() + 1
+            turn = await TranscriptTurn.objects.acreate(
+                call=call,
+                seq_number=seq_number,
+                speaker=speaker,
+                text=text,
+                latency_ms=latency_ms,
+            )
+            return self._model_to_dict(turn)
 
     # ------------------------------------------------------------------
     # Summaries API
@@ -302,16 +321,14 @@ class CallStorage:
             return payload
         else:
             from telephony.models import Call, Summary
-            def _db_op():
-                call = Call.objects.filter(call_sid=call_sid).first()
-                if not call:
-                    logger.error("Call ID not found for call_sid=%s when saving summary in Django", call_sid)
-                    return {}
-                summary = Summary.objects.create(
-                    call=call,
-                    summary_text=summary_text,
-                    delivery_status=delivery_status,
-                    destination=destination
-                )
-                return self._model_to_dict(summary)
-            return await sync_to_async(_db_op)()
+            call = await Call.objects.filter(call_sid=call_sid).afirst()
+            if not call:
+                logger.error("Call ID not found for call_sid=%s when saving summary in Django", call_sid)
+                return {}
+            summary = await Summary.objects.acreate(
+                call=call,
+                summary_text=summary_text,
+                delivery_status=delivery_status,
+                destination=destination,
+            )
+            return self._model_to_dict(summary)

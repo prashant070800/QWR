@@ -70,6 +70,16 @@ class AgentSettings:
     )
 
     # ------------------------------------------------------------------ #
+    # Supabase storage                                                   #
+    # ------------------------------------------------------------------ #
+    supabase_url: str = field(
+        default_factory=lambda: _env("SUPABASE_URL", "")
+    )
+    supabase_key: str = field(
+        default_factory=lambda: _env("SUPABASE_SERVICE_ROLE_KEY", "")
+    )
+
+    # ------------------------------------------------------------------ #
     # Google Cloud (STT + TTS)                                            #
     # ------------------------------------------------------------------ #
     google_credentials_path: str = field(

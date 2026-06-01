@@ -26,9 +26,9 @@ from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
 from ai_agent.agent import ConversationTurn, QWRAgent
 from ai_agent.config import settings
+from ai_agent.storage import CallStorage
 from ai_agent.stt import transcribe_audio
 from ai_agent.tts import synthesize_speech
-from ai_agent.storage import CallStorage
 
 from .audio import (
     EXOTEL_CHANNELS,
@@ -39,6 +39,7 @@ from .audio import (
     chunk_pcm,
     generate_tone_pcm,
 )
+from .phone_numbers import to_e164
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +181,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                     call_sid=self.state.call_sid,
                     updates={
                         "status": "completed",
-                        "duration": int(duration_s)
+                        "duration": int(duration_s),
                     }
                 )
             except Exception as exc:
@@ -262,8 +263,8 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         self.state.stream_sid    = content.get("stream_sid") or start.get("stream_sid")
         self.state.call_sid      = start.get("call_sid")
         self.state.account_sid   = start.get("account_sid")
-        self.state.from_number   = start.get("from")
-        self.state.to_number     = start.get("to")
+        self.state.from_number   = to_e164(start.get("from"))
+        self.state.to_number     = to_e164(start.get("to"))
         self.state.media_format  = start.get("media_format") or {}
         if not self.state.stream_sid:
             logger.error("%s Exotel start missing stream_sid payload=%s", self.state.log_prefix, content)
@@ -272,16 +273,14 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         self._validate_media_format()
 
         # Create Call and Profile records in database
-        caller_number = (self.state.from_number or "").strip()
-        if caller_number:
+        if self.state.from_number:
             try:
-                normalized_number = "".join(c for c in caller_number if c.isdigit() or c == "+")
-                if normalized_number and not normalized_number.startswith("+"):
-                    normalized_number = "+" + normalized_number
                 await self.storage.create_call(
                     call_sid=self.state.call_sid or f"unknown-sid",
                     stream_sid=self.state.stream_sid,
-                    caller_number=normalized_number
+                    from_number=self.state.from_number,
+                    to_number=self.state.to_number,
+                    direction="incoming",
                 )
             except Exception as exc:
                 logger.error("%s Failed to save call/profile record to storage: %s", self.state.log_prefix, exc)

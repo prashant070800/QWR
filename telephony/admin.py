@@ -24,9 +24,19 @@ class ProfileAdmin(admin.ModelAdmin):
 
 @admin.register(Call)
 class CallAdmin(admin.ModelAdmin):
-    list_display = ('call_sid', 'caller_number', 'status', 'duration_display', 'selected_mode', 'created_at')
-    search_fields = ('call_sid', 'stream_sid', 'caller_number')
-    list_filter = ('status', 'selected_mode', 'created_at')
+    list_display = (
+        'call_sid',
+        'from_number',
+        'to_number',
+        'direction',
+        'status',
+        'duration_display',
+        'completed_on',
+        'selected_mode',
+        'created_at',
+    )
+    search_fields = ('call_sid', 'stream_sid', 'from_number', 'to_number', 'caller_number')
+    list_filter = ('direction', 'status', 'selected_mode', 'completed_on', 'created_at')
     ordering = ('-created_at',)
     inlines = [TranscriptTurnInline, SummaryInline]
     readonly_fields = ('created_at', 'updated_at')
