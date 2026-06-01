@@ -52,11 +52,119 @@ Key facts about QWR:
 
 Important guidelines:
 - Keep answers SHORT and conversational (2–3 sentences max) since this is a phone call.
-- Speak naturally, as if talking on the phone.
+- Speak naturally, as if talking on the phone with a real person.
+- Use simple everyday words, contractions, and brief acknowledgements like "Sure" or "Got it" when they fit.
+- Do not sound like a script, brochure, or long FAQ answer.
+- Ask only one follow-up question at a time.
+- Avoid bullet lists unless the caller explicitly asks for a list.
 - If you don't know something, say you'll connect them with the QWR team.
 - Do NOT make up specific prices, dates, or technical specs not in the context provided.
 - After answering, gently ask if the caller has more questions or would like a callback.
 """
+
+
+import io
+import wave
+import re
+
+def pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 8000) -> bytes:
+    """Wrap raw mono 16-bit PCM bytes into a standard WAV header container, stripping silence."""
+    import struct
+    num_samples = len(pcm_bytes) // 2
+    if num_samples > 0:
+        try:
+            samples = struct.unpack(f"<{num_samples}h", pcm_bytes)
+            # Threshold 500 (standard threshold for 16-bit VAD)
+            threshold = 500
+            padding = int(sample_rate * 0.1)  # 100ms padding
+            
+            # Find first sample above threshold
+            start_idx = 0
+            for i, s in enumerate(samples):
+                if abs(s) > threshold:
+                    start_idx = max(0, i - padding)
+                    break
+            else:
+                start_idx = 0
+
+            # Find last sample above threshold
+            end_idx = num_samples
+            for i in range(num_samples - 1, -1, -1):
+                if abs(samples[i]) > threshold:
+                    end_idx = min(num_samples, i + padding)
+                    break
+
+            if start_idx < end_idx:
+                pcm_bytes = pcm_bytes[start_idx * 2 : end_idx * 2]
+        except Exception as exc:
+            logger.warning("Failed to strip silence from PCM bytes: %s", exc)
+
+    wav_buf = io.BytesIO()
+    with wave.open(wav_buf, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)  # 16-bit PCM
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm_bytes)
+    return wav_buf.getvalue()
+
+def parse_gemini_response(response_text: str) -> tuple[str, str]:
+    """Parse Gemini's structured response to extract user transcript and agent reply.
+
+    Expected format:
+    User transcript: <what the user said>
+    Agent reply: <what the agent responded>
+    """
+    user_tx = ""
+    agent_reply = ""
+
+    # Try regex match (case-insensitive, allowing asterisks or markup)
+    match = re.search(
+        r"User\s*transcript\s*:\s*(.*?)\n+Agent\s*reply\s*:\s*(.*)",
+        response_text,
+        re.DOTALL | re.IGNORECASE
+    )
+    if match:
+        user_tx = match.group(1).strip()
+        agent_reply = match.group(2).strip()
+    else:
+        # Fallback line-by-line parser
+        lines = response_text.split("\n")
+        user_lines = []
+        agent_lines = []
+        in_user = False
+        in_agent = False
+        for line in lines:
+            lower_line = line.lower().strip()
+            if "user transcript:" in lower_line:
+                in_user = True
+                in_agent = False
+                part = line.split(":", 1)[1].strip()
+                if part:
+                    user_lines.append(part)
+            elif "agent reply:" in lower_line:
+                in_agent = True
+                in_user = False
+                part = line.split(":", 1)[1].strip()
+                if part:
+                    agent_lines.append(part)
+            else:
+                if in_user:
+                    user_lines.append(line.strip())
+                elif in_agent:
+                    agent_lines.append(line.strip())
+
+        user_tx = " ".join(user_lines).strip()
+        agent_reply = " ".join(agent_lines).strip()
+
+    # Clean up markdown formatting characters like asterisks or quotes
+    user_tx = re.sub(r"^['\"\*#\s\-]+|['\"\*#\s\-]+$", "", user_tx)
+    agent_reply = re.sub(r"^['\"\*#\s\-]+|['\"\*#\s\-]+$", "", agent_reply)
+
+    if not agent_reply:
+        agent_reply = response_text
+        user_tx = "Audio input"
+
+    return user_tx, agent_reply
 
 
 @dataclass
@@ -65,6 +173,7 @@ class ConversationTurn:
 
     speaker: str       # "user" or "assistant"
     text: str
+    role: str = "" # Backwards compatibility or future use
     timestamp: float = field(default_factory=time.monotonic)
     latency_ms: float | None = None  # For assistant turns: LLM+TTS latency
 
@@ -82,30 +191,73 @@ class QWRAgent:
         stream_sid: str | None = None,
         llm: LLMProvider | None = None,
         scraper: QWRScraper | None = None,
+        system_prompt: str | None = None,
+        agent_name: str | None = None,
+        welcome_message: str | None = None,
+        business_url: str | None = None,
     ) -> None:
         self.call_sid = call_sid or "unknown"
         self.stream_sid = stream_sid or "unknown"
 
         self._llm: LLMProvider = llm or get_llm_provider(settings)
-        self._scraper: QWRScraper = scraper or QWRScraper(
-            cache_ttl_seconds=settings.qwr_cache_ttl_seconds
-        )
+        
+        # Use shared scraper to avoid network latency on cache miss per call
+        from ai_agent.tools.qwr_scraper import shared_scraper, warm_up_cache
+        self._scraper: QWRScraper = scraper or shared_scraper
+        warm_up_cache()
+
+        self.business_url = business_url or settings.qwr_website_url
+        from urllib.parse import urlparse
+        self.domain = urlparse(self.business_url).netloc.lower()
+
+        # Trigger background crawl and indexing if not already indexed
+        from ai_agent.tools.crawler import trigger_crawl
+        trigger_crawl(self.business_url)
 
         self._history: list[ConversationTurn] = []
         self._log_prefix = f"call_sid={self.call_sid} stream_sid={self.stream_sid}"
 
+        self.agent_name = agent_name or settings.ai_agent_name
+        self.welcome_message = welcome_message or settings.ai_welcome_message
+
+        # Determine the base system prompt
+        base_prompt = system_prompt or settings.ai_system_prompt or QWR_SYSTEM_PROMPT
+        
+        # If agent name is set, inject it into the prompt instruction
+        if self.agent_name:
+            base_prompt = f"Your name is {self.agent_name}. Speak as {self.agent_name}.\n{base_prompt}"
+        
+        self.system_prompt = base_prompt + (
+            "\n\nIMPORTANT: For every turn of the conversation, you will receive "
+            "either a text prompt or audio data representing the user speaking. "
+            "You MUST first transcribe exactly what the user said (if it is audio), "
+            "or repeat their input (if it is text). Then, you MUST write your "
+            "conversational reply. You MUST format your entire response exactly "
+            "like this:\n"
+            "User transcript: <what the user said>\n"
+            "Agent reply: <your response to the user>\n"
+            "Do not include any other markdown or text outside this format."
+        )
+
         logger.info(
-            "%s QWRAgent initialised provider=%s model=%s",
+            "%s QWRAgent initialised provider=%s model=%s agent_name=%s welcome_msg=%s",
             self._log_prefix,
             self._llm.provider_name,
             self._llm.model_name,
+            self.agent_name,
+            self.welcome_message,
         )
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    async def chat(self, user_text: str) -> str:
+    async def chat(
+        self,
+        user_text: str | None = None,
+        audio_bytes: bytes | None = None,
+        sample_rate: int = 8000,
+    ) -> tuple[str, str]:
         """Process a user utterance and return the agent's reply.
 
         Steps:
@@ -113,61 +265,87 @@ class QWRAgent:
         2. Build message list (system prompt + history + context + user turn).
         3. Send to configured LLM.
         4. Record turn in history with latency.
-        5. Return reply text.
+        5. Return (user_transcript, agent_reply) tuple.
         """
         t0 = time.monotonic()
 
-        logger.info(
-            "%s User utterance: %r",
-            self._log_prefix,
+        # Step 1: fetch context from vector DB
+        qwr_context = await self._get_context_from_db(user_text or "")
+
+        # Step 2: convert audio if present
+        wav_bytes = None
+        if audio_bytes:
+            wav_bytes = pcm_to_wav(audio_bytes, sample_rate)
+
+        # Step 3: build messages
+        audio_mime = "audio/wav" if wav_bytes else None
+        messages = self._build_messages(
             user_text,
+            qwr_context,
+            audio_data=wav_bytes,
+            audio_mime=audio_mime,
         )
 
-        # Step 1: fetch QWR context
-        qwr_context = await self._scraper.get_context(user_text)
+        # Step 4: call LLM
+        raw_reply = await self._llm.chat(messages, max_tokens=settings.ai_max_tokens)
 
-        logger.info(
-            "%s QWR context fetched chars=%d",
-            self._log_prefix,
-            len(qwr_context),
-        )
+        # Step 5: parse structured response
+        user_transcript, agent_reply = parse_gemini_response(raw_reply)
 
-        # Step 2: build messages
-        messages = self._build_messages(user_text, qwr_context)
-
-        # Step 3: call LLM
-        reply = await self._llm.chat(messages, max_tokens=settings.ai_max_tokens)
+        # If user_text was passed directly (like DTMF), override user_transcript
+        if user_text and not audio_bytes:
+            user_transcript = user_text
 
         latency_ms = (time.monotonic() - t0) * 1000
 
+        # Step 6: record turns
+        self._history.append(ConversationTurn(speaker="user", text=user_transcript))
+        self._history.append(
+            ConversationTurn(speaker="assistant", text=agent_reply, latency_ms=latency_ms)
+        )
+
+        return user_transcript, agent_reply
+
+    async def get_greeting(self) -> str:
+        """Generate the opening greeting for a new call.
+        
+        If welcome_message is configured, return it immediately to avoid LLM call latency.
+        """
+        if self.welcome_message:
+            logger.info("%s Using pre-configured welcome message greeting: %r", self._log_prefix, self.welcome_message)
+            self._history.append(
+                ConversationTurn(speaker="assistant", text=self.welcome_message, latency_ms=0.0)
+            )
+            return self.welcome_message
+
+        # LLM fallback
+        t0 = time.monotonic()
+        messages = [
+            Message(role="system", content=self.system_prompt),
+            Message(
+                role="user",
+                content=(
+                    "The phone call has just connected. Start the conversation "
+                    "like a helpful QWR representative. Keep it under 18 words "
+                    "and ask how you can help."
+                ),
+            ),
+        ]
+        greeting = await self._llm.chat(messages, max_tokens=64)
+        user_tx, agent_reply = parse_gemini_response(greeting)
+        latency_ms = (time.monotonic() - t0) * 1000
         logger.info(
-            "%s AI reply provider=%s model=%s latency_ms=%.0f preview=%r",
+            "%s AI greeting provider=%s model=%s latency_ms=%.0f preview=%r",
             self._log_prefix,
             self._llm.provider_name,
             self._llm.model_name,
             latency_ms,
-            reply[:100],
+            agent_reply[:100],
         )
-
-        # Step 4: record turns
-        self._history.append(ConversationTurn(speaker="user", text=user_text))
         self._history.append(
-            ConversationTurn(speaker="assistant", text=reply, latency_ms=latency_ms)
+            ConversationTurn(speaker="assistant", text=agent_reply, latency_ms=latency_ms)
         )
-
-        return reply
-
-    async def get_greeting(self) -> str:
-        """Return the opening greeting message for a new call."""
-        greeting = (
-            "Hello! Welcome to QWR, India's leading XR hardware company. "
-            "I'm your AI assistant. I can answer questions about our VR headsets, "
-            "AR glasses, AI wearables, and enterprise solutions. "
-            "How can I help you today?"
-        )
-        logger.info("%s Sending greeting to caller", self._log_prefix)
-        self._history.append(ConversationTurn(speaker="assistant", text=greeting))
-        return greeting
+        return agent_reply
 
     def get_transcript(self) -> list[dict]:
         """Return the full call transcript as a list of dicts for logging/storage."""
@@ -191,16 +369,22 @@ class QWRAgent:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_messages(self, user_text: str, qwr_context: str) -> list[Message]:
+    def _build_messages(
+        self,
+        user_text: str | None,
+        qwr_context: str,
+        audio_data: bytes | None = None,
+        audio_mime: str | None = None,
+    ) -> list[Message]:
         """Assemble the full message list to send to the LLM."""
         messages: list[Message] = []
 
         # System prompt
-        system_content = QWR_SYSTEM_PROMPT
+        system_content = self.system_prompt
         if qwr_context:
             system_content += (
-                "\n\n--- LIVE QWR WEBSITE CONTEXT ---\n"
-                "Use the following live content from questionwhatsreal.com "
+                f"\n\n--- LIVE WEBSITE CONTEXT FOR {self.business_url} ---\n"
+                "Use the following live content from the business website "
                 "to answer accurately:\n\n"
                 + qwr_context
             )
@@ -213,6 +397,65 @@ class QWRAgent:
             messages.append(Message(role=role, content=turn.text))
 
         # Current user message
-        messages.append(Message(role="user", content=user_text))
+        content = user_text or ""
+        messages.append(
+            Message(
+                role="user",
+                content=content,
+                audio_data=audio_data,
+                audio_mime=audio_mime,
+            )
+        )
 
         return messages
+
+    async def _get_context_from_db(self, query: str) -> str:
+        """Fetch matching context from Vector DB, falling back to scraper if not fully indexed."""
+        import asyncio
+        from ai_agent.tools.vector_db import SQLiteVectorDB
+        import google.generativeai as genai
+
+        db = SQLiteVectorDB()
+        status = db.get_business_status(self.domain)
+
+        # Fallback to scraper if indexing is not completed yet
+        if status != "completed":
+            logger.info("Vector DB indexing status for domain=%s is %s, falling back to real-time scraper", self.domain, status)
+            return await self._scraper.get_context(query)
+
+        search_query = query.strip()
+        if not search_query:
+            if self._history:
+                # Use last 2 turns of text history to maintain context
+                search_query = " ".join([t.text for t in self._history[-2:]])
+            else:
+                search_query = "overview home contact info"
+
+        try:
+            loop = asyncio.get_running_loop()
+            def _embed():
+                return genai.embed_content(
+                    model="models/gemini-embedding-001",
+                    content=search_query,
+                    task_type="retrieval_query"
+                )
+            
+            resp = await loop.run_in_executor(None, _embed)
+            query_emb = resp.get("embedding", [])
+            
+            if not query_emb:
+                logger.warning("Empty embedding returned for query=%r, falling back to first chunks", search_query)
+                fallback_chunks = db.get_first_chunks(self.domain, count=3)
+                return "\n\n".join(fallback_chunks)
+
+            matches = db.search(self.domain, query_emb, top_k=3)
+            if not matches:
+                logger.warning("No vector matches found for query=%r, falling back to first chunks", search_query)
+                fallback_chunks = db.get_first_chunks(self.domain, count=3)
+                return "\n\n".join(fallback_chunks)
+
+            return "\n\n".join([f"Source: {m['url']}\nContent: {m['text']}" for m in matches])
+
+        except Exception as exc:
+            logger.error("Vector search failed for domain=%s query=%r: %s", self.domain, search_query, exc)
+            return await self._scraper.get_context(query)

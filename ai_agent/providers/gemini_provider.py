@@ -57,7 +57,12 @@ class GeminiProvider(LLMProvider):
             if msg.role == "system":
                 system_parts.append(msg.content)
             elif msg.role == "user":
-                chat_turns.append({"role": "user", "parts": [msg.content]})
+                parts = []
+                if msg.content:
+                    parts.append(msg.content)
+                if msg.audio_data and msg.audio_mime:
+                    parts.append({"mime_type": msg.audio_mime, "data": msg.audio_data})
+                chat_turns.append({"role": "user", "parts": parts})
             elif msg.role == "assistant":
                 chat_turns.append({"role": "model", "parts": [msg.content]})
 
@@ -94,8 +99,8 @@ class GeminiProvider(LLMProvider):
                         # Use multi-turn chat
                         history = chat_turns[:-1]  # all but last
                         chat = model.start_chat(history=history)
-                        last_user_text = chat_turns[-1]["parts"][0] if chat_turns else ""
-                        response = chat.send_message(last_user_text)
+                        last_user_parts = chat_turns[-1]["parts"]
+                        response = chat.send_message(last_user_parts)
                     else:
                         response = model.generate_content("")
 

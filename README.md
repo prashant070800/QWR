@@ -81,7 +81,7 @@ Exotel sends JSON WebSocket messages and the consumer currently handles:
 - `clear`
 - `stop`
 
-On `start`, the server captures stream metadata, validates Exotel media format, creates a per-call `QWRAgent`, synthesizes a greeting, and sends little-endian signed 16-bit mono PCM audio base64 encoded in Exotel `media` frames. The audio uses `start.media_format.sample_rate` when Exotel provides it, falling back to 8 kHz. Frames are sent in 20 ms chunks, paced according to the negotiated sample rate, and followed by a `mark` event named `qwr-greeting-complete`.
+On `start`, the server captures stream metadata, validates Exotel media format, creates a per-call `QWRAgent`, asks the agent to generate the opening greeting, and sends little-endian signed 16-bit mono PCM audio base64 encoded in Exotel `media` frames. The audio uses `start.media_format.sample_rate` when Exotel provides it, falling back to 8 kHz. Frames are sent in 20 ms chunks, paced according to the negotiated sample rate, and followed by a `mark` event named `qwr-greeting-complete`.
 
 ## How the Telephony AI Agent Works
 
@@ -91,7 +91,7 @@ The live call path is implemented in `telephony.consumers.ExotelVoicebotConsumer
 2. Exotel sends `connected`, then `start`; the consumer stores `stream_sid`, `call_sid`, caller/callee numbers, and media format.
 3. The consumer validates the media format. Supported audio is raw signed linear PCM, mono, 16-bit, at 8 kHz, 16 kHz, or 24 kHz.
 4. A new `QWRAgent` is created for that call only, so conversation history does not leak between calls.
-5. The bot speaks `Welcome to QWR! How can I help you today?` through the configured TTS provider. If TTS fails, the consumer falls back to a generated tone.
+5. The AI agent generates a short natural opening greeting, then the bot speaks it through the configured TTS provider. If TTS fails, the consumer falls back to a generated tone.
 6. Exotel `media` events arrive with base64 audio. The consumer decodes each chunk into PCM, appends it to the current audio buffer, and tracks silence/speech chunks.
 7. When enough silence is detected after speech (`STT_SILENCE_CHUNKS`, default `10`) and at least one second of audio is buffered, the buffer is flushed to STT.
 8. STT returns text. In development the stub returns `What products does QWR make?`; in real calls Deepgram or Google returns the caller transcript.
@@ -102,7 +102,7 @@ The live call path is implemented in `telephony.consumers.ExotelVoicebotConsumer
 
 DTMF input is also supported. When Exotel sends a keypad digit, the consumer records it and routes it into the same AI pipeline as a text override such as `User pressed key 1 on keypad`.
 
-Barge-in is partially supported for greeting/playback. If enough caller speech chunks are detected while playback is active, the consumer cancels local playback so the caller can interrupt the bot.
+Barge-in is supported for greeting and reply playback. If enough non-silent caller speech chunks are detected while playback is active, the consumer cancels local playback and sends Exotel a `clear` event so queued outbound audio stops while the caller talks.
 
 ## Current Architecture
 

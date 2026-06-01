@@ -24,6 +24,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+from ai_agent.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -201,4 +203,25 @@ class QWRScraper:
         # Collapse whitespace
         text = re.sub(r"\s+", " ", text).strip()
         # Keep only printable ASCII + common Unicode
-        return text[:8000]  # cap per page to keep context manageable
+        return text[:1500]  # cap per page to keep context manageable (reduces input tokens for latency)
+
+
+# Module-level singleton to share cache across calls and tasks
+shared_scraper = QWRScraper(
+    cache_ttl_seconds=settings.qwr_cache_ttl_seconds if "settings" in globals() else 3600
+)
+
+def warm_up_cache() -> None:
+    """Trigger background fetching of home/about pages to warm up the cache."""
+    try:
+        loop = asyncio.get_running_loop()
+        if loop.is_running():
+            for page in ["home", "about"]:
+                url = QWR_PAGES.get(page)
+                if url:
+                    loop.create_task(shared_scraper.get_page(url))
+    except RuntimeError:
+        # No running event loop during module load
+        pass
+
+warm_up_cache()
