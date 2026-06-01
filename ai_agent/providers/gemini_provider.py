@@ -57,7 +57,12 @@ class GeminiProvider(LLMProvider):
             if msg.role == "system":
                 system_parts.append(msg.content)
             elif msg.role == "user":
-                chat_turns.append({"role": "user", "parts": [msg.content]})
+                parts = []
+                if msg.content:
+                    parts.append(msg.content)
+                if msg.audio_data and msg.audio_mime:
+                    parts.append({"mime_type": msg.audio_mime, "data": msg.audio_data})
+                chat_turns.append({"role": "user", "parts": parts})
             elif msg.role == "assistant":
                 chat_turns.append({"role": "model", "parts": [msg.content]})
 

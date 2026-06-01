@@ -63,12 +63,87 @@ Important guidelines:
 """
 
 
+import io
+import wave
+import re
+
+def pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 8000) -> bytes:
+    """Wrap raw mono 16-bit PCM bytes into a standard WAV header container."""
+    wav_buf = io.BytesIO()
+    with wave.open(wav_buf, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)  # 16-bit PCM
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm_bytes)
+    return wav_buf.getvalue()
+
+def parse_gemini_response(response_text: str) -> tuple[str, str]:
+    """Parse Gemini's structured response to extract user transcript and agent reply.
+
+    Expected format:
+    User transcript: <what the user said>
+    Agent reply: <what the agent responded>
+    """
+    user_tx = ""
+    agent_reply = ""
+
+    # Try regex match (case-insensitive, allowing asterisks or markup)
+    match = re.search(
+        r"User\s*transcript\s*:\s*(.*?)\n+Agent\s*reply\s*:\s*(.*)",
+        response_text,
+        re.DOTALL | re.IGNORECASE
+    )
+    if match:
+        user_tx = match.group(1).strip()
+        agent_reply = match.group(2).strip()
+    else:
+        # Fallback line-by-line parser
+        lines = response_text.split("\n")
+        user_lines = []
+        agent_lines = []
+        in_user = False
+        in_agent = False
+        for line in lines:
+            lower_line = line.lower().strip()
+            if "user transcript:" in lower_line:
+                in_user = True
+                in_agent = False
+                part = line.split(":", 1)[1].strip()
+                if part:
+                    user_lines.append(part)
+            elif "agent reply:" in lower_line:
+                in_agent = True
+                in_user = False
+                part = line.split(":", 1)[1].strip()
+                if part:
+                    agent_lines.append(part)
+            else:
+                if in_user:
+                    user_lines.append(line.strip())
+                elif in_agent:
+                    agent_lines.append(line.strip())
+
+        user_tx = " ".join(user_lines).strip()
+        agent_reply = " ".join(agent_lines).strip()
+
+    # Clean up markdown formatting characters like asterisks or quotes
+    user_tx = re.sub(r"^['\"\*#\s\-]+|['\"\*#\s\-]+$", "", user_tx)
+    agent_reply = re.sub(r"^['\"\*#\s\-]+|['\"\*#\s\-]+$", "", agent_reply)
+
+    if not agent_reply:
+        agent_reply = response_text
+        user_tx = "Audio input"
+
+    return user_tx, agent_reply
+
+
 @dataclass
 class ConversationTurn:
     """A single exchange in the call conversation."""
 
     speaker: str       # "user" or "assistant"
     text: str
+    role: str = "" # Backwards compatibility or future use
     timestamp: float = field(default_factory=time.monotonic)
     latency_ms: float | None = None  # For assistant turns: LLM+TTS latency
 
@@ -112,7 +187,17 @@ class QWRAgent:
         if self.agent_name:
             base_prompt = f"Your name is {self.agent_name}. Speak as {self.agent_name}.\n{base_prompt}"
         
-        self.system_prompt = base_prompt
+        self.system_prompt = base_prompt + (
+            "\n\nIMPORTANT: For every turn of the conversation, you will receive "
+            "either a text prompt or audio data representing the user speaking. "
+            "You MUST first transcribe exactly what the user said (if it is audio), "
+            "or repeat their input (if it is text). Then, you MUST write your "
+            "conversational reply. You MUST format your entire response exactly "
+            "like this:\n"
+            "User transcript: <what the user said>\n"
+            "Agent reply: <your response to the user>\n"
+            "Do not include any other markdown or text outside this format."
+        )
 
         logger.info(
             "%s QWRAgent initialised provider=%s model=%s agent_name=%s welcome_msg=%s",
@@ -127,7 +212,12 @@ class QWRAgent:
     # Public API
     # ------------------------------------------------------------------
 
-    async def chat(self, user_text: str) -> str:
+    async def chat(
+        self,
+        user_text: str | None = None,
+        audio_bytes: bytes | None = None,
+        sample_rate: int = 8000,
+    ) -> tuple[str, str]:
         """Process a user utterance and return the agent's reply.
 
         Steps:
@@ -135,49 +225,46 @@ class QWRAgent:
         2. Build message list (system prompt + history + context + user turn).
         3. Send to configured LLM.
         4. Record turn in history with latency.
-        5. Return reply text.
+        5. Return (user_transcript, agent_reply) tuple.
         """
         t0 = time.monotonic()
 
-        logger.info(
-            "%s User utterance: %r",
-            self._log_prefix,
-            user_text,
-        )
-
         # Step 1: fetch QWR context
-        qwr_context = await self._scraper.get_context(user_text)
+        qwr_context = await self._scraper.get_context(user_text or "")
 
-        logger.info(
-            "%s QWR context fetched chars=%d",
-            self._log_prefix,
-            len(qwr_context),
+        # Step 2: convert audio if present
+        wav_bytes = None
+        if audio_bytes:
+            wav_bytes = pcm_to_wav(audio_bytes, sample_rate)
+
+        # Step 3: build messages
+        audio_mime = "audio/wav" if wav_bytes else None
+        messages = self._build_messages(
+            user_text,
+            qwr_context,
+            audio_data=wav_bytes,
+            audio_mime=audio_mime,
         )
 
-        # Step 2: build messages
-        messages = self._build_messages(user_text, qwr_context)
+        # Step 4: call LLM
+        raw_reply = await self._llm.chat(messages, max_tokens=settings.ai_max_tokens)
 
-        # Step 3: call LLM
-        reply = await self._llm.chat(messages, max_tokens=settings.ai_max_tokens)
+        # Step 5: parse structured response
+        user_transcript, agent_reply = parse_gemini_response(raw_reply)
+
+        # If user_text was passed directly (like DTMF), override user_transcript
+        if user_text and not audio_bytes:
+            user_transcript = user_text
 
         latency_ms = (time.monotonic() - t0) * 1000
 
-        logger.info(
-            "%s AI reply provider=%s model=%s latency_ms=%.0f preview=%r",
-            self._log_prefix,
-            self._llm.provider_name,
-            self._llm.model_name,
-            latency_ms,
-            reply[:100],
-        )
-
-        # Step 4: record turns
-        self._history.append(ConversationTurn(speaker="user", text=user_text))
+        # Step 6: record turns
+        self._history.append(ConversationTurn(speaker="user", text=user_transcript))
         self._history.append(
-            ConversationTurn(speaker="assistant", text=reply, latency_ms=latency_ms)
+            ConversationTurn(speaker="assistant", text=agent_reply, latency_ms=latency_ms)
         )
 
-        return reply
+        return user_transcript, agent_reply
 
     async def get_greeting(self) -> str:
         """Generate the opening greeting for a new call.
@@ -205,6 +292,7 @@ class QWRAgent:
             ),
         ]
         greeting = await self._llm.chat(messages, max_tokens=64)
+        user_tx, agent_reply = parse_gemini_response(greeting)
         latency_ms = (time.monotonic() - t0) * 1000
         logger.info(
             "%s AI greeting provider=%s model=%s latency_ms=%.0f preview=%r",
@@ -212,12 +300,12 @@ class QWRAgent:
             self._llm.provider_name,
             self._llm.model_name,
             latency_ms,
-            greeting[:100],
+            agent_reply[:100],
         )
         self._history.append(
-            ConversationTurn(speaker="assistant", text=greeting, latency_ms=latency_ms)
+            ConversationTurn(speaker="assistant", text=agent_reply, latency_ms=latency_ms)
         )
-        return greeting
+        return agent_reply
 
     def get_transcript(self) -> list[dict]:
         """Return the full call transcript as a list of dicts for logging/storage."""
@@ -241,7 +329,13 @@ class QWRAgent:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_messages(self, user_text: str, qwr_context: str) -> list[Message]:
+    def _build_messages(
+        self,
+        user_text: str | None,
+        qwr_context: str,
+        audio_data: bytes | None = None,
+        audio_mime: str | None = None,
+    ) -> list[Message]:
         """Assemble the full message list to send to the LLM."""
         messages: list[Message] = []
 
@@ -263,6 +357,14 @@ class QWRAgent:
             messages.append(Message(role=role, content=turn.text))
 
         # Current user message
-        messages.append(Message(role="user", content=user_text))
+        content = user_text or ""
+        messages.append(
+            Message(
+                role="user",
+                content=content,
+                audio_data=audio_data,
+                audio_mime=audio_mime,
+            )
+        )
 
         return messages

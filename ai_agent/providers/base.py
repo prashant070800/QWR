@@ -19,9 +19,15 @@ class Message:
 
     role: str  # "system" | "user" | "assistant"
     content: str
+    audio_data: bytes | None = None
+    audio_mime: str | None = None
 
     def to_dict(self) -> dict[str, str]:
-        return {"role": self.role, "content": self.content}
+        d = {"role": self.role, "content": self.content}
+        if self.audio_data:
+            d["audio_data"] = self.audio_data
+            d["audio_mime"] = self.audio_mime
+        return d
 
 
 class LLMProvider(ABC):

@@ -276,29 +276,31 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         self.playback_task = asyncio.create_task(self._play_greeting())
 
     async def on_media(self, content: dict[str, Any]) -> None:
+        if not self.agent:
+            return
         self.state.inbound_chunks += 1
         media = content.get("media") or {}
         payload_b64: str = media.get("payload", "")
 
-        if not self.state.first_media_logged:
-            self.state.first_media_logged = True
-            logger.info(
-                "%s 🎤 FIRST inbound audio chunk=%s timestamp=%s payload_chars=%d",
-                self.state.log_prefix,
-                media.get("chunk"),
-                media.get("timestamp"),
-                len(payload_b64),
-            )
+        # if not self.state.first_media_logged:
+        #     self.state.first_media_logged = True
+        #     logger.info(
+        #         "%s 🎤 FIRST inbound audio chunk=%s timestamp=%s payload_chars=%d",
+        #         self.state.log_prefix,
+        #         media.get("chunk"),
+        #         media.get("timestamp"),
+        #         len(payload_b64),
+        #     )
 
-        logger.debug(
-            "%s 🎤 Inbound audio chunk=%s timestamp=%s payload_chars=%d "
-            "total_inbound=%d",
-            self.state.log_prefix,
-            media.get("chunk"),
-            media.get("timestamp"),
-            len(payload_b64),
-            self.state.inbound_chunks,
-        )
+        # logger.debug(
+        #     "%s 🎤 Inbound audio chunk=%s timestamp=%s payload_chars=%d "
+        #     "total_inbound=%d",
+        #     self.state.log_prefix,
+        #     media.get("chunk"),
+        #     media.get("timestamp"),
+        #     len(payload_b64),
+        #     self.state.inbound_chunks,
+        # )
         self.state.last_inbound_chunk = media.get("chunk")
         self.state.last_inbound_timestamp = media.get("timestamp")
         self.state.last_inbound_payload_chars = len(payload_b64)
@@ -333,12 +335,12 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 self.state.speech_chunk_count += 1
                 self._cancel_playback_for_barge_in()
 
-            if self.state.inbound_chunks % 50 == 0:
-                logger.info(
-                    "%s 🎧 Inbound audio snapshot: %s",
-                    self.state.log_prefix,
-                    self._runtime_snapshot(),
-                )
+            # if self.state.inbound_chunks % 50 == 0:
+            #     logger.info(
+            #         "%s 🎧 Inbound audio snapshot: %s",
+            #         self.state.log_prefix,
+            #         self._runtime_snapshot(),
+            #     )
 
         sample_rate   = self.get_sample_rate()
         silence_limit = settings.stt_silence_chunks
@@ -357,11 +359,11 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             self.state.silent_chunk_count = 0
             self.state.is_processing_stt  = True
 
-            logger.info(
-                "%s 🔇 Silence detected — flushing %d bytes to STT",
-                self.state.log_prefix,
-                len(audio_data),
-            )
+            # logger.info(
+            #     "%s 🔇 Silence detected — flushing %d bytes to STT",
+            #     self.state.log_prefix,
+            #     len(audio_data),
+            # )
             self.ai_task = asyncio.create_task(
                 self._handle_user_speech(audio_data)
             )
@@ -485,44 +487,22 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         *,
         text_override: str | None = None,
     ) -> None:
-        """Full pipeline: PCM → STT → LLM → TTS → Exotel stream."""
+        """Full pipeline: PCM (or text) → LLM → TTS → Exotel stream."""
         try:
             sample_rate = self.get_sample_rate()
             call_sid    = self.state.call_sid or ""
             stream_sid  = self.state.stream_sid or ""
 
-            # Step 1: STT
-            if text_override:
-                transcript = text_override
-            else:
-                transcript = await transcribe_audio(
-                    pcm_bytes,
-                    sample_rate=sample_rate,
-                    call_sid=call_sid,
-                    stream_sid=stream_sid,
-                )
-
-            if not transcript:
-                logger.info(
-                    "%s Empty transcript — no AI response generated",
-                    self.state.log_prefix,
-                )
-                return
-
-            self.state.caller_transcripts.append(transcript)
-            logger.info(
-                "%s 📝 CUSTOMER transcript: %r",
-                self.state.log_prefix,
-                transcript,
-            )
-
-            # Step 2: AI agent
             if not self.agent:
                 logger.error("%s Agent not initialised", self.state.log_prefix)
                 return
 
+            t_start = time.monotonic()
             try:
-                reply = await self.agent.chat(transcript)
+                if text_override:
+                    transcript, reply = await self.agent.chat(user_text=text_override)
+                else:
+                    transcript, reply = await self.agent.chat(audio_bytes=pcm_bytes, sample_rate=sample_rate)
             except Exception as exc:
                 logger.exception(
                     "%s Agent failed to generate reply: %s",
@@ -530,21 +510,23 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                     exc,
                 )
                 reply = _provider_error_reply(exc)
+                transcript = text_override or "Audio input"
                 self.agent._history.append(ConversationTurn(speaker="user", text=transcript))
                 self.agent._history.append(ConversationTurn(speaker="assistant", text=reply))
+
+            latency_ms = (time.monotonic() - t_start) * 1000
+            self.state.caller_transcripts.append(transcript)
             self.state.agent_replies.append(reply)
 
+            # Logger when user says something and what AI responds along with latency
             logger.info(
-                "%s 🤖 AGENT reply text: %r",
-                self.state.log_prefix,
+                "USER: %s | AI: %s | Latency: %.2fms",
+                transcript,
                 reply,
+                latency_ms,
             )
 
             if self.state.is_stopped:
-                logger.info(
-                    "%s Call already stopped — not synthesizing agent voice",
-                    self.state.log_prefix,
-                )
                 return
 
             # Step 3: TTS
@@ -556,24 +538,13 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 speaking_rate=self.voice_speed,
             )
 
-            logger.info(
-                "%s 🔊 TTS output: %d bytes → streaming to Exotel",
-                self.state.log_prefix,
-                len(pcm),
-            )
-
             if self.state.is_stopped:
-                logger.info(
-                    "%s Call stopped after TTS — not streaming agent voice",
-                    self.state.log_prefix,
-                )
                 return
 
             # Step 4: stream audio
             await self._stream_pcm_to_exotel(pcm, mark_name="qwr-reply-complete")
 
         except asyncio.CancelledError:
-            logger.info("%s AI pipeline cancelled", self.state.log_prefix)
             raise
         except Exception as exc:
             logger.exception(
@@ -635,34 +606,34 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         self.state.playback_packet_index = 0
         self.state.playback_total_packets = total_chunks
 
-        logger.info(
-            "%s 🔊 BEGIN streaming audio → Exotel: "
-            "total_chunks=%d total_bytes=%d mark=%s sample_rate=%d "
-            "chunk_bytes=%d frame_ms=%d channels=%d sample_width_bytes=%d",
-            self.state.log_prefix,
-            total_chunks,
-            total_bytes,
-            mark_name,
-            sample_rate,
-            chunk_bytes,
-            self.get_frame_ms(),
-            EXOTEL_CHANNELS,
-            EXOTEL_SAMPLE_WIDTH_BYTES,
-        )
+        # logger.info(
+        #     "%s 🔊 BEGIN streaming audio → Exotel: "
+        #     "total_chunks=%d total_bytes=%d mark=%s sample_rate=%d "
+        #     "chunk_bytes=%d frame_ms=%d channels=%d sample_width_bytes=%d",
+        #     self.state.log_prefix,
+        #     total_chunks,
+        #     total_bytes,
+        #     mark_name,
+        #     sample_rate,
+        #     chunk_bytes,
+        #     self.get_frame_ms(),
+        #     EXOTEL_CHANNELS,
+        #     EXOTEL_SAMPLE_WIDTH_BYTES,
+        # )
 
         try:
             for idx, chunk in enumerate(chunks):
                 if self.state.is_stopped or self.state.playback_cancel_requested:
-                    logger.info(
-                        "%s Stopping audio stream mark=%s at packet=%d/%d "
-                        "call_stopped=%s playback_cancel_requested=%s",
-                        self.state.log_prefix,
-                        mark_name,
-                        idx + 1,
-                        total_chunks,
-                        self.state.is_stopped,
-                        self.state.playback_cancel_requested,
-                    )
+                    # logger.info(
+                    #     "%s Stopping audio stream mark=%s at packet=%d/%d "
+                    #     "call_stopped=%s playback_cancel_requested=%s",
+                    #     self.state.log_prefix,
+                    #     mark_name,
+                    #     idx + 1,
+                    #     total_chunks,
+                    #     self.state.is_stopped,
+                    #     self.state.playback_cancel_requested,
+                    # )
                     return
 
                 chunk_b64  = b64_audio(chunk)
@@ -677,20 +648,20 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 self.state.outbound_sequence_number += 1
 
                 # ── Audio packet log ──────────────────────────────────────
-                logger.debug(
-                    "%s 📤 Sending audio packet #%d/%d "
-                    "media_chunk=%d timestamp_ms=%d sequence_number=%d "
-                    "chunk_bytes=%d b64_chars=%d duration_ms=%.1f",
-                    self.state.log_prefix,
-                    idx + 1,
-                    total_chunks,
-                    media_chunk,
-                    media_timestamp,
-                    sequence_number,
-                    len(chunk),
-                    len(chunk_b64),
-                    chunk_dur * 1000,
-                )
+                # logger.debug(
+                #     "%s 📤 Sending audio packet #%d/%d "
+                #     "media_chunk=%d timestamp_ms=%d sequence_number=%d "
+                #     "chunk_bytes=%d b64_chars=%d duration_ms=%.1f",
+                #     self.state.log_prefix,
+                #     idx + 1,
+                #     total_chunks,
+                #     media_chunk,
+                #     media_timestamp,
+                #     sequence_number,
+                #     len(chunk),
+                #     len(chunk_b64),
+                #     chunk_dur * 1000,
+                # )
                 # ─────────────────────────────────────────────────────────
 
                 await self.send_json(
@@ -703,12 +674,12 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                     }
                 )
                 self.state.last_outbound_send_monotonic = time.monotonic()
-                if idx == 0 or (idx + 1) % 25 == 0:
-                    logger.info(
-                        "%s 🔊 Outbound playback progress: %s",
-                        self.state.log_prefix,
-                        self._runtime_snapshot(),
-                    )
+                # if idx == 0 or (idx + 1) % 25 == 0:
+                #     logger.info(
+                #         "%s 🔊 Outbound playback progress: %s",
+                #         self.state.log_prefix,
+                #         self._runtime_snapshot(),
+                #     )
                 self.state.outbound_timestamp_ms += round(chunk_dur * 1000)
                 await asyncio.sleep(chunk_dur)
 
@@ -716,11 +687,11 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             sequence_number = self.state.outbound_sequence_number
             self.state.outbound_sequence_number += 1
             if self.state.is_stopped:
-                logger.info(
-                    "%s Skipping mark=%s because call is stopped",
-                    self.state.log_prefix,
-                    mark_name,
-                )
+                # logger.info(
+                #     "%s Skipping mark=%s because call is stopped",
+                #     self.state.log_prefix,
+                #     mark_name,
+                # )
                 return
             await self.send_json(
                 {
@@ -730,21 +701,21 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 }
             )
 
-            logger.info(
-                "%s ✅ Finished streaming audio: chunks_sent=%d mark=%s",
-                self.state.log_prefix,
-                total_chunks,
-                mark_name,
-            )
+            # logger.info(
+            #     "%s ✅ Finished streaming audio: chunks_sent=%d mark=%s",
+            #     self.state.log_prefix,
+            #     total_chunks,
+            #     mark_name,
+            # )
 
         except asyncio.CancelledError:
-            logger.info(
-                "%s ⏸  Playback cancelled at chunk=%d/%d mark=%s",
-                self.state.log_prefix,
-                idx + 1 if "idx" in dir() else 0,
-                total_chunks,
-                mark_name,
-            )
+            # logger.info(
+            #     "%s ⏸  Playback cancelled at chunk=%d/%d mark=%s",
+            #     self.state.log_prefix,
+            #     idx + 1 if "idx" in dir() else 0,
+            #     total_chunks,
+            #     mark_name,
+            # )
             raise
         finally:
             self.state.is_playing = False
