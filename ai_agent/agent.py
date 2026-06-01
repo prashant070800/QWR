@@ -52,7 +52,11 @@ Key facts about QWR:
 
 Important guidelines:
 - Keep answers SHORT and conversational (2–3 sentences max) since this is a phone call.
-- Speak naturally, as if talking on the phone.
+- Speak naturally, as if talking on the phone with a real person.
+- Use simple everyday words, contractions, and brief acknowledgements like "Sure" or "Got it" when they fit.
+- Do not sound like a script, brochure, or long FAQ answer.
+- Ask only one follow-up question at a time.
+- Avoid bullet lists unless the caller explicitly asks for a list.
 - If you don't know something, say you'll connect them with the QWR team.
 - Do NOT make up specific prices, dates, or technical specs not in the context provided.
 - After answering, gently ask if the caller has more questions or would like a callback.
@@ -158,15 +162,32 @@ class QWRAgent:
         return reply
 
     async def get_greeting(self) -> str:
-        """Return the opening greeting message for a new call."""
-        greeting = (
-            "Hello! Welcome to QWR, India's leading XR hardware company. "
-            "I'm your AI assistant. I can answer questions about our VR headsets, "
-            "AR glasses, AI wearables, and enterprise solutions. "
-            "How can I help you today?"
+        """Generate the opening greeting for a new call through the LLM."""
+        t0 = time.monotonic()
+        messages = [
+            Message(role="system", content=QWR_SYSTEM_PROMPT),
+            Message(
+                role="user",
+                content=(
+                    "The phone call has just connected. Start the conversation "
+                    "like a helpful QWR representative. Keep it under 18 words "
+                    "and ask how you can help."
+                ),
+            ),
+        ]
+        greeting = await self._llm.chat(messages, max_tokens=64)
+        latency_ms = (time.monotonic() - t0) * 1000
+        logger.info(
+            "%s AI greeting provider=%s model=%s latency_ms=%.0f preview=%r",
+            self._log_prefix,
+            self._llm.provider_name,
+            self._llm.model_name,
+            latency_ms,
+            greeting[:100],
         )
-        logger.info("%s Sending greeting to caller", self._log_prefix)
-        self._history.append(ConversationTurn(speaker="assistant", text=greeting))
+        self._history.append(
+            ConversationTurn(speaker="assistant", text=greeting, latency_ms=latency_ms)
+        )
         return greeting
 
     def get_transcript(self) -> list[dict]:

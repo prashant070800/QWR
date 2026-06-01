@@ -41,11 +41,9 @@ from .audio import (
 
 logger = logging.getLogger(__name__)
 
-# Greeting text spoken to the caller through the configured TTS provider.
-HARDCODED_GREETING = "Welcome to QWR! How can I help you today?"
 SUPPORTED_EXOTEL_ENCODINGS = {"raw/slin", "slin", "linear16", "pcm", "base64", ""}
 SUPPORTED_EXOTEL_SAMPLE_RATES = {8000, 16000, 24000}
-BARGE_IN_SPEECH_CHUNKS = 120
+BARGE_IN_SPEECH_CHUNKS = 12
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +84,7 @@ class ExotelStreamState:
     playback_mark: str | None = None
     playback_packet_index: int = 0
     playback_total_packets: int = 0
+    playback_cancel_requested: bool = False
     last_outbound_payload_chars: int = 0
     last_outbound_pcm_bytes: int = 0
     last_outbound_send_monotonic: float | None = None
@@ -380,34 +379,44 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
     # ------------------------------------------------------------------
 
     async def _play_greeting(self) -> None:
-        """Stream the hardcoded greeting to the caller.
+        """Generate and stream the opening greeting to the caller.
 
         Strategy:
-        1. Try the configured TTS provider.
-        2. Last resort: generate a synthetic tone (always works).
+        1. Ask the per-call AI agent for the greeting text.
+        2. Try the configured TTS provider.
+        3. Last resort: generate a synthetic tone (always works).
         """
         sample_rate = self.get_sample_rate()
         log_prefix  = self.state.log_prefix
 
+        greeting = ""
+        if self.agent:
+            try:
+                greeting = await self.agent.get_greeting()
+            except Exception as exc:
+                logger.exception(
+                    "%s AI greeting generation failed: %s",
+                    log_prefix,
+                    exc,
+                )
+
         logger.info(
             "%s 🎙  Greeting: %r  (TTS provider: %s)",
             log_prefix,
-            HARDCODED_GREETING,
+            greeting,
             settings.tts_provider,
         )
 
-        # Record greeting in agent history
-        if self.agent:
-            self.agent._history.append(
-                ConversationTurn(speaker="assistant", text=HARDCODED_GREETING)
-            )
-        self.state.agent_replies.append(HARDCODED_GREETING)
+        if greeting:
+            self.state.agent_replies.append(greeting)
 
         pcm: bytes = b""
-        if settings.tts_provider != "stub":
+        if not greeting:
+            logger.warning("%s No AI greeting text available; using tone fallback", log_prefix)
+        elif settings.tts_provider != "stub":
             try:
                 pcm = await synthesize_speech(
-                    HARDCODED_GREETING,
+                    greeting,
                     sample_rate=sample_rate,
                     call_sid=self.state.call_sid or "",
                     stream_sid=self.state.stream_sid or "",
@@ -581,6 +590,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         total_chunks = len(chunks)
         total_bytes  = len(pcm)
         self.state.is_playing = True
+        self.state.playback_cancel_requested = False
         self.state.playback_mark = mark_name
         self.state.playback_packet_index = 0
         self.state.playback_total_packets = total_chunks
@@ -602,13 +612,16 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
 
         try:
             for idx, chunk in enumerate(chunks):
-                if self.state.is_stopped:
+                if self.state.is_stopped or self.state.playback_cancel_requested:
                     logger.info(
-                        "%s Stopping audio stream mark=%s at packet=%d/%d; call is stopped",
+                        "%s Stopping audio stream mark=%s at packet=%d/%d "
+                        "call_stopped=%s playback_cancel_requested=%s",
                         self.state.log_prefix,
                         mark_name,
                         idx + 1,
                         total_chunks,
+                        self.state.is_stopped,
+                        self.state.playback_cancel_requested,
                     )
                     return
 
@@ -695,6 +708,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             raise
         finally:
             self.state.is_playing = False
+            self.state.playback_cancel_requested = False
             self.state.playback_mark = None
             self.state.playback_packet_index = 0
             self.state.playback_total_packets = 0
@@ -705,17 +719,45 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
 
     def _cancel_playback_for_barge_in(self) -> None:
         if (
-            self.playback_task
-            and not self.playback_task.done()
+            (self.state.is_playing or (self.playback_task and not self.playback_task.done()))
             and self.state.speech_chunk_count >= BARGE_IN_SPEECH_CHUNKS
         ):
             self._cancel_playback("caller speech detected")
 
     def _cancel_playback(self, reason: str) -> None:
+        was_playing = self.state.is_playing
+        self.state.playback_cancel_requested = True
         if self.playback_task and not self.playback_task.done():
             self.playback_task.cancel()
             logger.info("%s Playback cancelled: %s", self.state.log_prefix, reason)
+        if (
+            was_playing
+            and self.ai_task
+            and not self.ai_task.done()
+            and self.ai_task is not asyncio.current_task()
+        ):
+            self.ai_task.cancel()
+            logger.info("%s AI playback task cancelled: %s", self.state.log_prefix, reason)
+        if was_playing:
+            asyncio.create_task(self._send_clear_to_exotel(reason))
         self.state.is_playing = False
+
+    async def _send_clear_to_exotel(self, reason: str) -> None:
+        if self.state.is_stopped or not self.state.stream_sid:
+            return
+        try:
+            await self.send_json(
+                {
+                    "event": "clear",
+                    "stream_sid": self.state.stream_sid,
+                }
+            )
+            logger.info("%s Sent Exotel clear: %s", self.state.log_prefix, reason)
+        except Exception:
+            logger.exception(
+                "%s Failed to send Exotel clear for playback cancellation",
+                self.state.log_prefix,
+            )
 
     def _log_call_summary(self) -> None:
         if self.state.caller_transcripts:
@@ -752,6 +794,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             "playback_mark": self.state.playback_mark,
             "playback_packet": self.state.playback_packet_index,
             "playback_total_packets": self.state.playback_total_packets,
+            "playback_cancel_requested": self.state.playback_cancel_requested,
             "outbound_chunks": self.state.outbound_chunks,
             "outbound_timestamp_ms": self.state.outbound_timestamp_ms,
             "outbound_sequence_number": self.state.outbound_sequence_number,

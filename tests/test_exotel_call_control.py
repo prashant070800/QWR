@@ -57,6 +57,7 @@ class ExotelCallControlTests(IsolatedAsyncioTestCase):
     async def test_cancel_playback_for_barge_in_cancels_active_playback_task(self):
         consumer = self._consumer()
         consumer.playback_task = asyncio.create_task(asyncio.sleep(60))
+        consumer.state.is_playing = True
         consumer.state.speech_chunk_count = BARGE_IN_SPEECH_CHUNKS
 
         consumer._cancel_playback_for_barge_in()
@@ -64,10 +65,27 @@ class ExotelCallControlTests(IsolatedAsyncioTestCase):
 
         self.assertTrue(consumer.playback_task.cancelled())
         self.assertFalse(consumer.state.is_playing)
+        self.assertTrue(consumer.state.playback_cancel_requested)
+        self.assertEqual(consumer.sent_messages[-1]["event"], "clear")
+
+    async def test_cancel_playback_for_barge_in_cancels_active_ai_reply_stream(self):
+        consumer = self._consumer()
+        consumer.state.is_playing = True
+        consumer.state.speech_chunk_count = BARGE_IN_SPEECH_CHUNKS
+        consumer.ai_task = asyncio.create_task(asyncio.sleep(60))
+
+        consumer._cancel_playback_for_barge_in()
+        await asyncio.sleep(0)
+
+        self.assertTrue(consumer.ai_task.cancelled())
+        self.assertFalse(consumer.state.is_playing)
+        self.assertTrue(consumer.state.playback_cancel_requested)
+        self.assertEqual(consumer.sent_messages[-1]["event"], "clear")
 
     async def test_barge_in_ignores_short_noise_during_greeting(self):
         consumer = self._consumer()
         consumer.playback_task = asyncio.create_task(asyncio.sleep(60))
+        consumer.state.is_playing = True
         consumer.state.speech_chunk_count = BARGE_IN_SPEECH_CHUNKS - 1
 
         consumer._cancel_playback_for_barge_in()
