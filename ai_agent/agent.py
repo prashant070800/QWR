@@ -194,6 +194,7 @@ class QWRAgent:
         system_prompt: str | None = None,
         agent_name: str | None = None,
         welcome_message: str | None = None,
+        business_url: str | None = None,
     ) -> None:
         self.call_sid = call_sid or "unknown"
         self.stream_sid = stream_sid or "unknown"
@@ -204,6 +205,14 @@ class QWRAgent:
         from ai_agent.tools.qwr_scraper import shared_scraper, warm_up_cache
         self._scraper: QWRScraper = scraper or shared_scraper
         warm_up_cache()
+
+        self.business_url = business_url or settings.qwr_website_url
+        from urllib.parse import urlparse
+        self.domain = urlparse(self.business_url).netloc.lower()
+
+        # Trigger background crawl and indexing if not already indexed
+        from ai_agent.tools.crawler import trigger_crawl
+        trigger_crawl(self.business_url)
 
         self._history: list[ConversationTurn] = []
         self._log_prefix = f"call_sid={self.call_sid} stream_sid={self.stream_sid}"
@@ -260,8 +269,8 @@ class QWRAgent:
         """
         t0 = time.monotonic()
 
-        # Step 1: fetch QWR context
-        qwr_context = await self._scraper.get_context(user_text or "")
+        # Step 1: fetch context from vector DB
+        qwr_context = await self._get_context_from_db(user_text or "")
 
         # Step 2: convert audio if present
         wav_bytes = None
@@ -374,8 +383,8 @@ class QWRAgent:
         system_content = self.system_prompt
         if qwr_context:
             system_content += (
-                "\n\n--- LIVE QWR WEBSITE CONTEXT ---\n"
-                "Use the following live content from questionwhatsreal.com "
+                f"\n\n--- LIVE WEBSITE CONTEXT FOR {self.business_url} ---\n"
+                "Use the following live content from the business website "
                 "to answer accurately:\n\n"
                 + qwr_context
             )
@@ -399,3 +408,54 @@ class QWRAgent:
         )
 
         return messages
+
+    async def _get_context_from_db(self, query: str) -> str:
+        """Fetch matching context from Vector DB, falling back to scraper if not fully indexed."""
+        import asyncio
+        from ai_agent.tools.vector_db import SQLiteVectorDB
+        import google.generativeai as genai
+
+        db = SQLiteVectorDB()
+        status = db.get_business_status(self.domain)
+
+        # Fallback to scraper if indexing is not completed yet
+        if status != "completed":
+            logger.info("Vector DB indexing status for domain=%s is %s, falling back to real-time scraper", self.domain, status)
+            return await self._scraper.get_context(query)
+
+        search_query = query.strip()
+        if not search_query:
+            if self._history:
+                # Use last 2 turns of text history to maintain context
+                search_query = " ".join([t.text for t in self._history[-2:]])
+            else:
+                search_query = "overview home contact info"
+
+        try:
+            loop = asyncio.get_running_loop()
+            def _embed():
+                return genai.embed_content(
+                    model="models/gemini-embedding-001",
+                    content=search_query,
+                    task_type="retrieval_query"
+                )
+            
+            resp = await loop.run_in_executor(None, _embed)
+            query_emb = resp.get("embedding", [])
+            
+            if not query_emb:
+                logger.warning("Empty embedding returned for query=%r, falling back to first chunks", search_query)
+                fallback_chunks = db.get_first_chunks(self.domain, count=3)
+                return "\n\n".join(fallback_chunks)
+
+            matches = db.search(self.domain, query_emb, top_k=3)
+            if not matches:
+                logger.warning("No vector matches found for query=%r, falling back to first chunks", search_query)
+                fallback_chunks = db.get_first_chunks(self.domain, count=3)
+                return "\n\n".join(fallback_chunks)
+
+            return "\n\n".join([f"Source: {m['url']}\nContent: {m['text']}" for m in matches])
+
+        except Exception as exc:
+            logger.error("Vector search failed for domain=%s query=%r: %s", self.domain, search_query, exc)
+            return await self._scraper.get_context(query)

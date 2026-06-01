@@ -150,14 +150,19 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             except ValueError:
                 pass
 
+        self.business_url = query_params.get("business_url", [None])[0]
+        if not self.business_url:
+            self.business_url = query_params.get("website_url", [None])[0]
+
         await self.accept()
         logger.info(
             "✅ Accepted Exotel WebSocket connection: "
-            "welcome=%s agent_name=%s has_prompt=%s speed=%s",
+            "welcome=%s agent_name=%s has_prompt=%s speed=%s business_url=%s",
             self.welcome_message,
             self.aiagent_name,
             bool(self.aiagent_prompt),
             self.voice_speed,
+            self.business_url,
         )
 
     async def disconnect(self, close_code: int) -> None:
@@ -270,6 +275,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             system_prompt=self.aiagent_prompt,
             agent_name=self.aiagent_name,
             welcome_message=self.welcome_message,
+            business_url=self.business_url,
         )
 
         # Stream greeting immediately.
