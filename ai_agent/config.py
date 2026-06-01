@@ -88,6 +88,16 @@ class AgentSettings:
     )
 
     # ------------------------------------------------------------------ #
+    # Supabase persistence settings                                      #
+    # ------------------------------------------------------------------ #
+    supabase_url: str = field(
+        default_factory=lambda: _env("SUPABASE_URL", "")
+    )
+    supabase_key: str = field(
+        default_factory=lambda: _env("SUPABASE_KEY", "")
+    )
+
+    # ------------------------------------------------------------------ #
     # Exotel                                                              #
     # ------------------------------------------------------------------ #
     exotel_account_sid: str = field(

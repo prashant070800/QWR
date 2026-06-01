@@ -28,6 +28,7 @@ from ai_agent.agent import ConversationTurn, QWRAgent
 from ai_agent.config import settings
 from ai_agent.stt import transcribe_audio
 from ai_agent.tts import synthesize_speech
+from ai_agent.storage import CallStorage
 
 from .audio import (
     EXOTEL_CHANNELS,
@@ -122,6 +123,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         self.playback_task = None
         self.ai_task = None
         self.agent = None
+        self.storage = CallStorage()
 
         # Parse query parameters from scope (passed by Exotel call webhook)
         from urllib.parse import parse_qs
@@ -172,6 +174,18 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 task.cancel()
 
         duration_s = time.monotonic() - self.state.call_start_time
+        if self.state.call_sid:
+            try:
+                await self.storage.update_call(
+                    call_sid=self.state.call_sid,
+                    updates={
+                        "status": "completed",
+                        "duration": int(duration_s)
+                    }
+                )
+            except Exception as exc:
+                logger.error("%s Failed to update call status at disconnect: %s", self.state.log_prefix, exc)
+
         logger.info(
             "%s 📵 Call ended close_code=%s duration_s=%.1f "
             "inbound_chunks=%s dtmf=%s",
@@ -256,6 +270,21 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             raise ValueError("Exotel start event missing stream_sid")
 
         self._validate_media_format()
+
+        # Create Call and Profile records in database
+        caller_number = (self.state.from_number or "").strip()
+        if caller_number:
+            try:
+                normalized_number = "".join(c for c in caller_number if c.isdigit() or c == "+")
+                if normalized_number and not normalized_number.startswith("+"):
+                    normalized_number = "+" + normalized_number
+                await self.storage.create_call(
+                    call_sid=self.state.call_sid or f"unknown-sid",
+                    stream_sid=self.state.stream_sid,
+                    caller_number=normalized_number
+                )
+            except Exception as exc:
+                logger.error("%s Failed to save call/profile record to storage: %s", self.state.log_prefix, exc)
 
         logger.info(
             "%s 📞 Exotel stream STARTED from=%s to=%s media_format=%s "
@@ -455,6 +484,16 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
 
         if greeting:
             self.state.agent_replies.append(greeting)
+            if self.state.call_sid:
+                try:
+                    await self.storage.insert_transcript_turn(
+                        call_sid=self.state.call_sid,
+                        speaker="assistant",
+                        text=greeting,
+                        latency_ms=0
+                    )
+                except Exception as exc:
+                    logger.error("%s Failed to save greeting turn to storage: %s", log_prefix, exc)
 
         pcm: bytes = b""
         if not greeting:
@@ -523,6 +562,23 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             latency_ms = (time.monotonic() - t_start) * 1000
             self.state.caller_transcripts.append(transcript)
             self.state.agent_replies.append(reply)
+
+            # Save turns to database storage
+            if call_sid:
+                try:
+                    await self.storage.insert_transcript_turn(
+                        call_sid=call_sid,
+                        speaker="user",
+                        text=transcript
+                    )
+                    await self.storage.insert_transcript_turn(
+                        call_sid=call_sid,
+                        speaker="assistant",
+                        text=reply,
+                        latency_ms=int(latency_ms)
+                    )
+                except Exception as exc:
+                    logger.error("%s Failed to save turns to storage: %s", self.state.log_prefix, exc)
 
             # Logger when user says something and what AI responds along with latency
             logger.info(
