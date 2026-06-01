@@ -2,28 +2,24 @@ import os
 import time
 import uuid
 import json
-import sqlite3
 import asyncio
 import logging
 from typing import Optional, Any, Dict, List
 import httpx
+from asgiref.sync import sync_to_async
+from django.db import models
 
 from ai_agent.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Reuse the vector store sqlite file for local storage to keep workspace clean
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-LOCAL_DB_PATH = os.path.join(BASE_DIR, "vector_store.sqlite3")
-
 class CallStorage:
     """Storage adapter to persist profiles, calls, turns, and summaries.
     
-    Supports local SQLite fallback or Supabase REST backend depending on environment config.
+    Supports Django models for local fallback or Supabase REST backend depending on environment config.
     """
 
-    def __init__(self, db_path: str = LOCAL_DB_PATH) -> None:
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[str] = None) -> None:
         self.supabase_url = settings.supabase_url.rstrip("/")
         self.supabase_key = settings.supabase_key
         self.use_supabase = bool(self.supabase_url and self.supabase_key)
@@ -36,62 +32,27 @@ class CallStorage:
                 "Content-Type": "application/json"
             }
         else:
-            logger.info("CallStorage initialized with LOCAL SQLITE fallback backend at %s", self.db_path)
-            self._init_local_db()
+            logger.info("CallStorage initialized with LOCAL DJANGO MODELS fallback backend")
 
-    def _init_local_db(self) -> None:
-        """Create tables for local sqlite store if they don't exist."""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS profiles (
-                    id TEXT PRIMARY KEY,
-                    phone TEXT UNIQUE NOT NULL,
-                    name TEXT,
-                    company TEXT,
-                    role TEXT,
-                    city TEXT,
-                    email TEXT,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS calls (
-                    id TEXT PRIMARY KEY,
-                    call_sid TEXT UNIQUE NOT NULL,
-                    stream_sid TEXT,
-                    caller_number TEXT NOT NULL,
-                    selected_mode TEXT,
-                    duration INTEGER DEFAULT 0,
-                    status TEXT NOT NULL,
-                    profile_id TEXT REFERENCES profiles(id) ON DELETE SET NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS transcript_turns (
-                    id TEXT PRIMARY KEY,
-                    call_id TEXT REFERENCES calls(id) ON DELETE CASCADE NOT NULL,
-                    seq_number INTEGER NOT NULL,
-                    speaker TEXT NOT NULL,
-                    text TEXT NOT NULL,
-                    latency_ms INTEGER,
-                    created_at REAL NOT NULL
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS summaries (
-                    id TEXT PRIMARY KEY,
-                    call_id TEXT REFERENCES calls(id) ON DELETE CASCADE NOT NULL,
-                    summary_text TEXT NOT NULL,
-                    delivery_status TEXT NOT NULL,
-                    destination TEXT,
-                    created_at REAL NOT NULL
-                )
-            """)
-            conn.commit()
+    def _model_to_dict(self, instance) -> Dict[str, Any]:
+        """Convert a Django model instance to a JSON-serializable dictionary."""
+        if not instance:
+            return {}
+        data = {}
+        for field in instance._meta.fields:
+            key_name = field.name
+            val = getattr(instance, field.name)
+            if isinstance(field, models.ForeignKey):
+                key_name = f"{field.name}_id"
+                val = getattr(instance, f"{field.name}_id")
+            
+            if isinstance(val, uuid.UUID):
+                data[key_name] = str(val)
+            elif hasattr(val, 'isoformat'): # DateTimeField
+                data[key_name] = val.isoformat()
+            else:
+                data[key_name] = val
+        return data
 
     # ------------------------------------------------------------------
     # Profiles API
@@ -128,30 +89,13 @@ class CallStorage:
                     if created_list:
                         return created_list[0]
                 
-                # Fallback return payload if representation fail
                 return payload
         else:
-            return await asyncio.to_thread(self._get_or_create_profile_sqlite, phone)
-
-    def _get_or_create_profile_sqlite(self, phone: str) -> Dict[str, Any]:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM profiles WHERE phone = ?", (phone,))
-            row = cursor.fetchone()
-            if row:
-                return dict(row)
-            
-            new_id = str(uuid.uuid4())
-            now = time.time()
-            cursor.execute("""
-                INSERT INTO profiles (id, phone, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
-            """, (new_id, phone, now, now))
-            conn.commit()
-            
-            cursor.execute("SELECT * FROM profiles WHERE id = ?", (new_id,))
-            return dict(cursor.fetchone())
+            from telephony.models import Profile
+            def _db_op():
+                profile, created = Profile.objects.get_or_create(phone=phone)
+                return self._model_to_dict(profile)
+            return await sync_to_async(_db_op)()
 
     async def update_profile(self, phone: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Update fields in a profile."""
@@ -171,32 +115,12 @@ class CallStorage:
                         return res[0]
             return None
         else:
-            return await asyncio.to_thread(self._update_profile_sqlite, phone, updates)
-
-    def _update_profile_sqlite(self, phone: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            fields = []
-            values = []
-            for k, v in updates.items():
-                fields.append(f"{k} = ?")
-                values.append(v)
-            
-            values.append(time.time())
-            values.append(phone)
-            
-            cursor.execute(f"""
-                UPDATE profiles 
-                SET {", ".join(fields)}, updated_at = ?
-                WHERE phone = ?
-            """, values)
-            conn.commit()
-            
-            cursor.execute("SELECT * FROM profiles WHERE phone = ?", (phone,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
+            from telephony.models import Profile
+            def _db_op():
+                Profile.objects.filter(phone=phone).update(**updates)
+                profile = Profile.objects.filter(phone=phone).first()
+                return self._model_to_dict(profile) if profile else None
+            return await sync_to_async(_db_op)()
 
     # ------------------------------------------------------------------
     # Calls API
@@ -232,23 +156,18 @@ class CallStorage:
                         return created[0]
             return payload
         else:
-            return await asyncio.to_thread(self._create_call_sqlite, call_sid, stream_sid, caller_number, profile_id)
-
-    def _create_call_sqlite(self, call_sid: str, stream_sid: str, caller_number: str, profile_id: str) -> Dict[str, Any]:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            new_id = str(uuid.uuid4())
-            now = time.time()
-            cursor.execute("""
-                INSERT INTO calls (id, call_sid, stream_sid, caller_number, status, profile_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (new_id, call_sid, stream_sid, caller_number, "initiated", profile_id, now, now))
-            conn.commit()
-            
-            cursor.execute("SELECT * FROM calls WHERE id = ?", (new_id,))
-            return dict(cursor.fetchone())
+            from telephony.models import Profile, Call
+            def _db_op():
+                prof = Profile.objects.get(id=profile_id)
+                call = Call.objects.create(
+                    call_sid=call_sid,
+                    stream_sid=stream_sid,
+                    caller_number=caller_number,
+                    status="initiated",
+                    profile=prof
+                )
+                return self._model_to_dict(call)
+            return await sync_to_async(_db_op)()
 
     async def update_call(self, call_sid: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Update call properties."""
@@ -264,32 +183,12 @@ class CallStorage:
                         return res[0]
             return None
         else:
-            return await asyncio.to_thread(self._update_call_sqlite, call_sid, updates)
-
-    def _update_call_sqlite(self, call_sid: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            fields = []
-            values = []
-            for k, v in updates.items():
-                fields.append(f"{k} = ?")
-                values.append(v)
-            
-            values.append(time.time())
-            values.append(call_sid)
-            
-            cursor.execute(f"""
-                UPDATE calls 
-                SET {", ".join(fields)}, updated_at = ?
-                WHERE call_sid = ?
-            """, values)
-            conn.commit()
-            
-            cursor.execute("SELECT * FROM calls WHERE call_sid = ?", (call_sid,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
+            from telephony.models import Call
+            def _db_op():
+                Call.objects.filter(call_sid=call_sid).update(**updates)
+                call = Call.objects.filter(call_sid=call_sid).first()
+                return self._model_to_dict(call) if call else None
+            return await sync_to_async(_db_op)()
 
     # ------------------------------------------------------------------
     # Transcript Turns API
@@ -297,7 +196,6 @@ class CallStorage:
 
     async def insert_transcript_turn(self, call_sid: str, speaker: str, text: str, latency_ms: Optional[int] = None) -> Dict[str, Any]:
         """Insert a speaker-labeled turn linked to the call session."""
-        # Find internal call_id
         call_id = None
         if self.use_supabase:
             url = f"{self.supabase_url}/rest/v1/calls?call_sid=eq.{call_sid}"
@@ -312,7 +210,6 @@ class CallStorage:
                 logger.error("Call ID not found for call_sid=%s when inserting turn", call_sid)
                 return {}
                 
-            # Count existing turns to determine sequence number
             seq_number = 1
             url_turns = f"{self.supabase_url}/rest/v1/transcript_turns?call_id=eq.{call_id}&select=count"
             resp_turns = await client.get(url_turns, headers={**self.headers, "Prefer": "count=exact"})
@@ -346,34 +243,22 @@ class CallStorage:
                     return created[0]
             return payload
         else:
-            return await asyncio.to_thread(self._insert_transcript_turn_sqlite, call_sid, speaker, text, latency_ms)
-
-    def _insert_transcript_turn_sqlite(self, call_sid: str, speaker: str, text: str, latency_ms: Optional[int] = None) -> Dict[str, Any]:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT id FROM calls WHERE call_sid = ?", (call_sid,))
-            row = cursor.fetchone()
-            if not row:
-                logger.error("Call ID not found for call_sid=%s when inserting turn in SQLite", call_sid)
-                return {}
-            call_id = row[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM transcript_turns WHERE call_id = ?", (call_id,))
-            cnt = cursor.fetchone()[0]
-            seq_number = cnt + 1
-            
-            new_id = str(uuid.uuid4())
-            now = time.time()
-            cursor.execute("""
-                INSERT INTO transcript_turns (id, call_id, seq_number, speaker, text, latency_ms, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (new_id, call_id, seq_number, speaker, text, latency_ms, now))
-            conn.commit()
-            
-            cursor.execute("SELECT * FROM transcript_turns WHERE id = ?", (new_id,))
-            return dict(cursor.fetchone())
+            from telephony.models import Call, TranscriptTurn
+            def _db_op():
+                call = Call.objects.filter(call_sid=call_sid).first()
+                if not call:
+                    logger.error("Call ID not found for call_sid=%s when inserting turn in Django", call_sid)
+                    return {}
+                seq_number = call.turns.count() + 1
+                turn = TranscriptTurn.objects.create(
+                    call=call,
+                    seq_number=seq_number,
+                    speaker=speaker,
+                    text=text,
+                    latency_ms=latency_ms
+                )
+                return self._model_to_dict(turn)
+            return await sync_to_async(_db_op)()
 
     # ------------------------------------------------------------------
     # Summaries API
@@ -416,27 +301,17 @@ class CallStorage:
                     return created[0]
             return payload
         else:
-            return await asyncio.to_thread(self._save_summary_sqlite, call_sid, summary_text, delivery_status, destination)
-
-    def _save_summary_sqlite(self, call_sid: str, summary_text: str, delivery_status: str, destination: Optional[str]) -> Dict[str, Any]:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT id FROM calls WHERE call_sid = ?", (call_sid,))
-            row = cursor.fetchone()
-            if not row:
-                logger.error("Call ID not found for call_sid=%s when saving summary in SQLite", call_sid)
-                return {}
-            call_id = row[0]
-            
-            new_id = str(uuid.uuid4())
-            now = time.time()
-            cursor.execute("""
-                INSERT INTO summaries (id, call_id, summary_text, delivery_status, destination, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (new_id, call_id, summary_text, delivery_status, destination, now))
-            conn.commit()
-            
-            cursor.execute("SELECT * FROM summaries WHERE id = ?", (new_id,))
-            return dict(cursor.fetchone())
+            from telephony.models import Call, Summary
+            def _db_op():
+                call = Call.objects.filter(call_sid=call_sid).first()
+                if not call:
+                    logger.error("Call ID not found for call_sid=%s when saving summary in Django", call_sid)
+                    return {}
+                summary = Summary.objects.create(
+                    call=call,
+                    summary_text=summary_text,
+                    delivery_status=delivery_status,
+                    destination=destination
+                )
+                return self._model_to_dict(summary)
+            return await sync_to_async(_db_op)()

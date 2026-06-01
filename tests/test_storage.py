@@ -1,24 +1,10 @@
-import os
 import asyncio
-import unittest
-import sqlite3
+from django.test import TransactionTestCase
 from ai_agent.storage import CallStorage
 
-TEST_DB_PATH = "test_voicebot_temp.sqlite3"
-
-class StorageTests(unittest.TestCase):
+class StorageTests(TransactionTestCase):
     def setUp(self):
-        # Always start with a clean test database
-        if os.path.exists(TEST_DB_PATH):
-            os.remove(TEST_DB_PATH)
-        self.storage = CallStorage(db_path=TEST_DB_PATH)
-
-    def tearDown(self):
-        if os.path.exists(TEST_DB_PATH):
-            try:
-                os.remove(TEST_DB_PATH)
-            except OSError:
-                pass
+        self.storage = CallStorage()
 
     def test_profile_creation_and_update(self):
         async def run_test():
