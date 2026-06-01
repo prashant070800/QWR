@@ -214,11 +214,11 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         await handler(content)
 
     async def send_json(self, content: dict[str, Any], close: bool = False) -> None:
-        logger.debug(
-            "%s → Exotel event=%s",
-            self.state.log_prefix,
-            content.get("event"),
-        )
+        # logger.debug(
+        #     "%s → Exotel event=%s",
+        #     self.state.log_prefix,
+        #     content.get("event"),
+        # )
         try:
             await super().send_json(content, close=close)
         except Exception:

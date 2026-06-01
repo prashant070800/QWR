@@ -99,8 +99,8 @@ class GeminiProvider(LLMProvider):
                         # Use multi-turn chat
                         history = chat_turns[:-1]  # all but last
                         chat = model.start_chat(history=history)
-                        last_user_text = chat_turns[-1]["parts"][0] if chat_turns else ""
-                        response = chat.send_message(last_user_text)
+                        last_user_parts = chat_turns[-1]["parts"]
+                        response = chat.send_message(last_user_parts)
                     else:
                         response = model.generate_content("")
 

@@ -68,7 +68,37 @@ import wave
 import re
 
 def pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 8000) -> bytes:
-    """Wrap raw mono 16-bit PCM bytes into a standard WAV header container."""
+    """Wrap raw mono 16-bit PCM bytes into a standard WAV header container, stripping silence."""
+    import struct
+    num_samples = len(pcm_bytes) // 2
+    if num_samples > 0:
+        try:
+            samples = struct.unpack(f"<{num_samples}h", pcm_bytes)
+            # Threshold 500 (standard threshold for 16-bit VAD)
+            threshold = 500
+            padding = int(sample_rate * 0.1)  # 100ms padding
+            
+            # Find first sample above threshold
+            start_idx = 0
+            for i, s in enumerate(samples):
+                if abs(s) > threshold:
+                    start_idx = max(0, i - padding)
+                    break
+            else:
+                start_idx = 0
+
+            # Find last sample above threshold
+            end_idx = num_samples
+            for i in range(num_samples - 1, -1, -1):
+                if abs(samples[i]) > threshold:
+                    end_idx = min(num_samples, i + padding)
+                    break
+
+            if start_idx < end_idx:
+                pcm_bytes = pcm_bytes[start_idx * 2 : end_idx * 2]
+        except Exception as exc:
+            logger.warning("Failed to strip silence from PCM bytes: %s", exc)
+
     wav_buf = io.BytesIO()
     with wave.open(wav_buf, "wb") as wav_file:
         wav_file.setnchannels(1)
@@ -171,8 +201,9 @@ class QWRAgent:
         self._llm: LLMProvider = llm or get_llm_provider(settings)
         
         # Use shared scraper to avoid network latency on cache miss per call
-        from ai_agent.tools.qwr_scraper import shared_scraper
+        from ai_agent.tools.qwr_scraper import shared_scraper, warm_up_cache
         self._scraper: QWRScraper = scraper or shared_scraper
+        warm_up_cache()
 
         self._history: list[ConversationTurn] = []
         self._log_prefix = f"call_sid={self.call_sid} stream_sid={self.stream_sid}"
