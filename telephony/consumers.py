@@ -122,8 +122,43 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         self.playback_task = None
         self.ai_task = None
         self.agent = None
+
+        # Parse query parameters from scope (passed by Exotel call webhook)
+        from urllib.parse import parse_qs
+        query_string = self.scope.get("query_string", b"").decode("utf-8")
+        query_params = parse_qs(query_string)
+
+        self.welcome_message = query_params.get("welcome_message", [None])[0]
+        if not self.welcome_message:
+            self.welcome_message = query_params.get("welcome", [None])[0]
+
+        self.aiagent_name = query_params.get("aiagent_name", [None])[0]
+        if not self.aiagent_name:
+            self.aiagent_name = query_params.get("agent_name", [None])[0]
+
+        self.aiagent_prompt = query_params.get("aiagent_prompt", [None])[0]
+        if not self.aiagent_prompt:
+            self.aiagent_prompt = query_params.get("prompt", [None])[0]
+
+        self.voice_speed = None
+        voice_speed_str = query_params.get("voice_speed", [None])[0]
+        if not voice_speed_str:
+            voice_speed_str = query_params.get("speed", [None])[0]
+        if voice_speed_str:
+            try:
+                self.voice_speed = float(voice_speed_str)
+            except ValueError:
+                pass
+
         await self.accept()
-        logger.info("✅ Accepted Exotel WebSocket connection (awaiting 'start' event)")
+        logger.info(
+            "✅ Accepted Exotel WebSocket connection: "
+            "welcome=%s agent_name=%s has_prompt=%s speed=%s",
+            self.welcome_message,
+            self.aiagent_name,
+            bool(self.aiagent_prompt),
+            self.voice_speed,
+        )
 
     async def disconnect(self, close_code: int) -> None:
         self.state.is_stopped = True
@@ -232,6 +267,9 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         self.agent = QWRAgent(
             call_sid=self.state.call_sid,
             stream_sid=self.state.stream_sid,
+            system_prompt=self.aiagent_prompt,
+            agent_name=self.aiagent_name,
+            welcome_message=self.welcome_message,
         )
 
         # Stream greeting immediately.
@@ -304,7 +342,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
 
         sample_rate   = self.get_sample_rate()
         silence_limit = settings.stt_silence_chunks
-        min_buf_bytes = sample_rate * 2 * 1  # 1 second of audio minimum
+        min_buf_bytes = int(sample_rate * 2 * 0.3)  # 300ms of audio minimum (improves response latency)
 
         # Trigger STT when we detect a pause after speech
         if (
@@ -420,6 +458,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                     sample_rate=sample_rate,
                     call_sid=self.state.call_sid or "",
                     stream_sid=self.state.stream_sid or "",
+                    speaking_rate=self.voice_speed,
                 )
             except Exception as exc:
                 logger.exception(
@@ -514,6 +553,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 sample_rate=sample_rate,
                 call_sid=call_sid,
                 stream_sid=stream_sid,
+                speaking_rate=self.voice_speed,
             )
 
             logger.info(

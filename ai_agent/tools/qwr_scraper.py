@@ -24,6 +24,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+from ai_agent.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -202,3 +204,9 @@ class QWRScraper:
         text = re.sub(r"\s+", " ", text).strip()
         # Keep only printable ASCII + common Unicode
         return text[:8000]  # cap per page to keep context manageable
+
+
+# Module-level singleton to share cache across calls and tasks
+shared_scraper = QWRScraper(
+    cache_ttl_seconds=settings.qwr_cache_ttl_seconds if "settings" in globals() else 3600
+)

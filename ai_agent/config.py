@@ -127,6 +127,20 @@ class AgentSettings:
     tts_voice_name: str = field(
         default_factory=lambda: _env("TTS_VOICE_NAME", "en-IN-Wavenet-A")
     )
+    tts_speaking_rate: float = field(
+        default_factory=lambda: float(_env("TTS_SPEAKING_RATE", "1.15"))
+    )
+
+    # ── AI Agent dynamic settings ──
+    ai_welcome_message: str = field(
+        default_factory=lambda: _env("AI_WELCOME_MESSAGE", "Welcome to QWR, how can I help you?")
+    )
+    ai_agent_name: str = field(
+        default_factory=lambda: _env("AI_AGENT_NAME", "QWR Assistant")
+    )
+    ai_system_prompt: str = field(
+        default_factory=lambda: _env("AI_SYSTEM_PROMPT", "")
+    )
 
     def validate(self) -> None:
         """Raise ValueError for obviously wrong configurations."""

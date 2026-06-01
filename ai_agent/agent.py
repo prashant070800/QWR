@@ -86,23 +86,41 @@ class QWRAgent:
         stream_sid: str | None = None,
         llm: LLMProvider | None = None,
         scraper: QWRScraper | None = None,
+        system_prompt: str | None = None,
+        agent_name: str | None = None,
+        welcome_message: str | None = None,
     ) -> None:
         self.call_sid = call_sid or "unknown"
         self.stream_sid = stream_sid or "unknown"
 
         self._llm: LLMProvider = llm or get_llm_provider(settings)
-        self._scraper: QWRScraper = scraper or QWRScraper(
-            cache_ttl_seconds=settings.qwr_cache_ttl_seconds
-        )
+        
+        # Use shared scraper to avoid network latency on cache miss per call
+        from ai_agent.tools.qwr_scraper import shared_scraper
+        self._scraper: QWRScraper = scraper or shared_scraper
 
         self._history: list[ConversationTurn] = []
         self._log_prefix = f"call_sid={self.call_sid} stream_sid={self.stream_sid}"
 
+        self.agent_name = agent_name or settings.ai_agent_name
+        self.welcome_message = welcome_message or settings.ai_welcome_message
+
+        # Determine the base system prompt
+        base_prompt = system_prompt or settings.ai_system_prompt or QWR_SYSTEM_PROMPT
+        
+        # If agent name is set, inject it into the prompt instruction
+        if self.agent_name:
+            base_prompt = f"Your name is {self.agent_name}. Speak as {self.agent_name}.\n{base_prompt}"
+        
+        self.system_prompt = base_prompt
+
         logger.info(
-            "%s QWRAgent initialised provider=%s model=%s",
+            "%s QWRAgent initialised provider=%s model=%s agent_name=%s welcome_msg=%s",
             self._log_prefix,
             self._llm.provider_name,
             self._llm.model_name,
+            self.agent_name,
+            self.welcome_message,
         )
 
     # ------------------------------------------------------------------
@@ -162,10 +180,21 @@ class QWRAgent:
         return reply
 
     async def get_greeting(self) -> str:
-        """Generate the opening greeting for a new call through the LLM."""
+        """Generate the opening greeting for a new call.
+        
+        If welcome_message is configured, return it immediately to avoid LLM call latency.
+        """
+        if self.welcome_message:
+            logger.info("%s Using pre-configured welcome message greeting: %r", self._log_prefix, self.welcome_message)
+            self._history.append(
+                ConversationTurn(speaker="assistant", text=self.welcome_message, latency_ms=0.0)
+            )
+            return self.welcome_message
+
+        # LLM fallback
         t0 = time.monotonic()
         messages = [
-            Message(role="system", content=QWR_SYSTEM_PROMPT),
+            Message(role="system", content=self.system_prompt),
             Message(
                 role="user",
                 content=(
@@ -217,7 +246,7 @@ class QWRAgent:
         messages: list[Message] = []
 
         # System prompt
-        system_content = QWR_SYSTEM_PROMPT
+        system_content = self.system_prompt
         if qwr_context:
             system_content += (
                 "\n\n--- LIVE QWR WEBSITE CONTEXT ---\n"

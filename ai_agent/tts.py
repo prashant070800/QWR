@@ -32,6 +32,7 @@ async def synthesize_speech(
     sample_rate: int = 8000,
     call_sid: str = "unknown",
     stream_sid: str = "unknown",
+    speaking_rate: float | None = None,
 ) -> bytes:
     """Convert *text* to raw 16-bit mono PCM audio bytes.
 
@@ -43,6 +44,8 @@ async def synthesize_speech(
         Target sample rate in Hz (Exotel default 8000).
     call_sid / stream_sid:
         Used for structured log output only.
+    speaking_rate:
+        Speedup/slowdown factor (e.g. 1.15 is 15% faster).
 
     Returns
     -------
@@ -53,16 +56,20 @@ async def synthesize_speech(
     log_prefix = f"call_sid={call_sid} stream_sid={stream_sid}"
     provider = settings.tts_provider.lower()
 
+    if speaking_rate is None:
+        speaking_rate = settings.tts_speaking_rate
+
     logger.info(
-        "%s TTS request provider=%s text_len=%d preview=%r",
+        "%s TTS request provider=%s text_len=%d rate=%.2f preview=%r",
         log_prefix,
         provider,
         len(text),
+        speaking_rate,
         text[:80],
     )
 
     if provider == "gtts":
-        pcm = await _gtts_synthesize(text, sample_rate, log_prefix)
+        pcm = await _gtts_synthesize(text, sample_rate, log_prefix, speaking_rate)
         if pcm:
             return pcm
         logger.warning("%s gTTS failed, falling back to stub", log_prefix)
@@ -72,23 +79,23 @@ async def synthesize_speech(
         return _stub_synthesize(text, sample_rate, log_prefix)
 
     if provider == "google":
-        pcm = await _google_synthesize(text, sample_rate, log_prefix)
+        pcm = await _google_synthesize(text, sample_rate, log_prefix, speaking_rate)
         if pcm:
             return pcm
         logger.warning("%s Google TTS failed, falling back to gtts", log_prefix)
-        return await _gtts_synthesize(text, sample_rate, log_prefix)
+        return await _gtts_synthesize(text, sample_rate, log_prefix, speaking_rate)
 
     logger.warning(
         "%s Unknown TTS provider=%r, falling back to gtts", log_prefix, provider
     )
-    return await _gtts_synthesize(text, sample_rate, log_prefix)
+    return await _gtts_synthesize(text, sample_rate, log_prefix, speaking_rate)
 
 
 # ---------------------------------------------------------------------------
 # gTTS — Google Translate TTS (FREE, no API key)
 # ---------------------------------------------------------------------------
 
-async def _gtts_synthesize(text: str, sample_rate: int, log_prefix: str) -> bytes:
+async def _gtts_synthesize(text: str, sample_rate: int, log_prefix: str, speaking_rate: float) -> bytes:
     """Use gTTS (Google Translate TTS, free) to synthesize speech.
 
     gTTS returns an MP3. We convert it to 16-bit mono PCM via pydub or
@@ -120,8 +127,11 @@ async def _gtts_synthesize(text: str, sample_rate: int, log_prefix: str) -> byte
         # Convert MP3 → PCM using pydub (preferred)
         try:
             from pydub import AudioSegment  # type: ignore[import-untyped]
+            from pydub.effects import speedup
 
             audio = AudioSegment.from_mp3(io.BytesIO(mp3_bytes))
+            if speaking_rate != 1.0:
+                audio = speedup(audio, playback_speed=speaking_rate)
             audio = audio.set_channels(1).set_frame_rate(sample_rate).set_sample_width(2)
             pcm = audio.raw_data
             logger.info(
@@ -218,6 +228,7 @@ async def _google_synthesize(
     text: str,
     sample_rate: int,
     log_prefix: str,
+    speaking_rate: float,
 ) -> bytes:
     """Synthesize speech using Google Cloud TTS REST API and return raw PCM."""
     import asyncio
@@ -263,7 +274,7 @@ async def _google_synthesize(
         "audioConfig": {
             "audioEncoding": "LINEAR16",
             "sampleRateHertz": sample_rate,
-            "speakingRate": 0.95,
+            "speakingRate": speaking_rate,
         },
     }
 
