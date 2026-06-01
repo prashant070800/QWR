@@ -13,11 +13,11 @@
   *Acceptance: `GET /health/` returns JSON status.*
 - [x] 🔵 Add Exotel WebSocket route. (S)
   *Acceptance: `/ws/exotel/voicebot/` resolves to an async consumer.*
-- [ ] 🔵 Add environment-based settings for secrets, hosts, and debug. (S)
+- [x] 🔵 Add environment-based settings for secrets, hosts, and debug. (S)
   *Acceptance: local and deployed settings are driven by environment variables.*
-- [ ] 🔵 Add structured logging with call and stream identifiers. (S)
+- [x] 🔵 Add structured logging with call and stream identifiers. (S)
   *Acceptance: every call-path log includes `call_sid` or `stream_sid` when available.*
-- [ ] 🔵 Add deployment entrypoint for ASGI server. (S)
+- [x] 🔵 Add deployment entrypoint for ASGI server. (S)
   *Acceptance: README documents the exact Daphne/Uvicorn command.*
 - [ ] 🔵 Add CI checks for formatting, linting, tests, and Django checks. (M)
   *Acceptance: one command runs all repo quality gates.*
@@ -46,34 +46,34 @@
 - [x] 🔴 Handle Exotel `connected` and `start` events. (S)
   *Acceptance: stream and call metadata are captured from the start payload.*
 - [x] 🔴 Send demo audio back to Exotel. (M)
-  *Acceptance: start event triggers 10 seconds of base64 PCM media frames.*
+  *Acceptance: start event triggers base64 PCM media frames for the greeting, with tone fallback if TTS fails.*
 - [x] 🔴 Handle Exotel `media`, `dtmf`, `mark`, `clear`, and `stop` events. (M)
   *Acceptance: each supported event maps to a dedicated method.*
 - [ ] 🔴 Add Exotel webhook/passthru endpoint for recording and terminal metadata. (M)
   *Acceptance: stream completion metadata can update the call record.*
 - [ ] 🔴 Add authentication validation for Exotel WebSocket access. (M)
   *Acceptance: unauthorized WebSocket attempts are rejected or ignored safely.*
-- [ ] 🔴 Add public tunnel/deployment instructions for Exotel testing. (S)
+- [x] 🔴 Add public tunnel/deployment instructions for Exotel testing. (S)
   *Acceptance: README shows how to expose local Daphne over `wss://`.*
 - [ ] 🔴 Run an end-to-end Exotel test call. (L)
   *Acceptance: a caller hears the demo audio and logs show Exotel event flow.*
 
 ## Phase 4: Voice Pipeline 🔴
-- [ ] 🔴 Decide realtime speech-to-speech vs STT/LLM/TTS components. (M) [rubric: 20%]
+- [x] 🔴 Decide realtime speech-to-speech vs STT/LLM/TTS components. (M) [rubric: 20%]
   *Acceptance: README explains the choice and tradeoffs.*
-- [ ] 🔴 Stream inbound PCM to selected STT/realtime engine. (L) [rubric: 15%]
+- [x] 🔴 Stream inbound PCM to selected STT/realtime engine. (L) [rubric: 15%]
   *Acceptance: caller speech produces partial or final transcripts.*
-- [ ] 🔴 Maintain per-call conversation context. (M)
+- [x] 🔴 Maintain per-call conversation context. (M)
   *Acceptance: later turns include relevant prior turns without leaking across calls.*
-- [ ] 🔴 Generate LLM replies with QWR system instructions. (L)
+- [x] 🔴 Generate LLM replies with QWR system instructions. (L)
   *Acceptance: bot answers naturally and can steer back to intake/conversation.*
-- [ ] 🔴 Stream TTS or realtime model audio back to Exotel. (L) [rubric: 20%]
+- [~] 🔴 Stream TTS or realtime model audio back to Exotel. (L) [rubric: 20%]
   *Acceptance: bot audio starts before full reply completion where provider supports it.*
-- [ ] 🔴 Handle silence and no-input recovery. (M)
+- [~] 🔴 Handle silence and no-input recovery. (M)
   *Acceptance: bot reprompts gracefully before fallback or call end.*
 - [ ] 🔴 Handle "didn't catch that" cases. (M)
   *Acceptance: low-confidence or empty transcription triggers a useful recovery prompt.*
-- [ ] 🔴 Track latency per voice turn. (M) [rubric: 20%]
+- [~] 🔴 Track latency per voice turn. (M) [rubric: 20%]
   *Acceptance: transcript turn records include measured response latency.*
 - [ ] 🔴 Create WER test set for Indian-accented English/Hinglish. (M) [rubric: 15%]
   *Acceptance: README reports WER calculation over a small documented sample.*
@@ -119,7 +119,7 @@
 ## Phase 7: Web Search & QWR Data 🔴
 - [ ] 🔴 Add web search tool integration. (M) [rubric: 5%]
   *Acceptance: factual/current call questions can use live search results.*
-- [ ] 🔴 Fetch QWR facts from `questionwhatsreal.com`. (M) [rubric: 5%]
+- [x] 🔴 Fetch QWR facts from `questionwhatsreal.com`. (M) [rubric: 5%]
   *Acceptance: QWR-specific answers prefer company website content.*
 - [ ] 🔴 Add QWR fact sheet fallback. (S)
   *Acceptance: bot can answer baseline QWR questions if website fetch fails.*
@@ -167,9 +167,9 @@
   *Acceptance: README describes signals, adaptation, and limitations.*
 
 ## Phase 11: Testing & Measurement 🔵
-- [ ] 🔵 Add unit tests for audio chunking. (S)
+- [x] 🔵 Add unit tests for audio chunking. (S)
   *Acceptance: PCM helper tests validate Exotel chunk sizing.*
-- [ ] 🔵 Add consumer tests for Exotel event dispatch. (M)
+- [~] 🔵 Add consumer tests for Exotel event dispatch. (M)
   *Acceptance: WebSocket tests cover start, media, DTMF, clear, and stop.*
 - [ ] 🔵 Add STT WER measurement script. (M)
   *Acceptance: command outputs WER for the documented test set.*
@@ -179,17 +179,17 @@
   *Acceptance: deliverables include a test call recording or dial-in demo.*
 
 ## Phase 12: Documentation & Deliverables 🔵
-- [ ] 🔵 Write architecture section. (S) [rubric: 5%]
+- [x] 🔵 Write architecture section. (S) [rubric: 5%]
   *Acceptance: README explains telephony adapter, voice engine, Supabase, and dashboard boundaries.*
 - [ ] 🔵 Add ER diagram. (S)
   *Acceptance: README or docs include profile/call/transcript relationships.*
-- [ ] 🔵 Document STT/TTS choices and rationale. (S)
+- [x] 🔵 Document STT/TTS choices and rationale. (S)
   *Acceptance: README names providers and why they were selected.*
 - [ ] 🔵 Report measured latency and WER. (S)
   *Acceptance: README includes actual measurements from test runs.*
 - [ ] 🔵 Document extraction and diarization decisions. (S)
   *Acceptance: README explains structured intake and speaker labeling approach.*
-- [ ] 🔵 Document tradeoffs and incomplete optional work. (S)
+- [x] 🔵 Document tradeoffs and incomplete optional work. (S)
   *Acceptance: README clearly states known gaps and future improvements.*
 - [ ] 🔵 Prepare final GitHub repository. (S)
   *Acceptance: repo includes code, schema, README, and reproducible setup.*

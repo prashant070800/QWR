@@ -1,6 +1,6 @@
 # QWR AI Voice Bot
 
-Django + Channels backend for the QWR AI Voice Bot assignment. The Exotel AgentStream / Voicebot WebSocket endpoint accepts Exotel call events, speaks a TTS greeting, transcribes caller audio, gets an AI reply, and streams synthesized voice back to the caller.
+Django + Channels backend for the QWR AI Voice Bot assignment. The Exotel AgentStream / Voicebot WebSocket endpoint accepts live call events, speaks a TTS greeting, transcribes caller audio, gets a QWR-aware AI reply, and streams synthesized voice back to the caller.
 
 ## Setup
 
@@ -40,6 +40,15 @@ ANTHROPIC_API_KEY=...
 
 For local voice testing, `TTS_PROVIDER=gtts` gives audible speech without a cloud key. `STT_PROVIDER=stub` keeps the pipeline working with canned transcripts; use `deepgram` or `google` for real caller transcription.
 
+Voice provider options:
+
+- `STT_PROVIDER=stub` returns a canned transcript for local development.
+- `STT_PROVIDER=deepgram` sends raw linear16 phone audio to Deepgram Nova-2 phonecall.
+- `STT_PROVIDER=google` sends linear16 audio to Google Cloud Speech-to-Text.
+- `TTS_PROVIDER=gtts` creates audible speech through gTTS, then converts MP3 to Exotel-ready PCM.
+- `TTS_PROVIDER=google` uses Google Cloud Text-to-Speech with the configured language and voice.
+- `TTS_PROVIDER=stub` returns silence for tests; the greeting path falls back to a generated tone so callers still hear something.
+
 ## Exotel Voicebot Applet
 
 Configure the Voicebot Applet URL as:
@@ -72,20 +81,48 @@ Exotel sends JSON WebSocket messages and the consumer currently handles:
 - `clear`
 - `stop`
 
-On `start`, the server synthesizes a greeting and sends little-endian signed 16-bit mono PCM audio, base64 encoded in Exotel `media` frames. The audio uses the `start.media_format.sample_rate` when Exotel provides it, falling back to 8 kHz. Frames are sent in 20 ms chunks and paced according to the negotiated sample rate, then followed by a `mark` event named `qwr-greeting-complete`.
+On `start`, the server captures stream metadata, validates Exotel media format, creates a per-call `QWRAgent`, synthesizes a greeting, and sends little-endian signed 16-bit mono PCM audio base64 encoded in Exotel `media` frames. The audio uses `start.media_format.sample_rate` when Exotel provides it, falling back to 8 kHz. Frames are sent in 20 ms chunks, paced according to the negotiated sample rate, and followed by a `mark` event named `qwr-greeting-complete`.
+
+## How the Telephony AI Agent Works
+
+The live call path is implemented in `telephony.consumers.ExotelVoicebotConsumer`.
+
+1. Exotel opens a WebSocket at `/ws/exotel/voicebot/`; Django Channels accepts it through `qwr_voicebot.asgi` and `telephony.routing`.
+2. Exotel sends `connected`, then `start`; the consumer stores `stream_sid`, `call_sid`, caller/callee numbers, and media format.
+3. The consumer validates the media format. Supported audio is raw signed linear PCM, mono, 16-bit, at 8 kHz, 16 kHz, or 24 kHz.
+4. A new `QWRAgent` is created for that call only, so conversation history does not leak between calls.
+5. The bot speaks `Welcome to QWR! How can I help you today?` through the configured TTS provider. If TTS fails, the consumer falls back to a generated tone.
+6. Exotel `media` events arrive with base64 audio. The consumer decodes each chunk into PCM, appends it to the current audio buffer, and tracks silence/speech chunks.
+7. When enough silence is detected after speech (`STT_SILENCE_CHUNKS`, default `10`) and at least one second of audio is buffered, the buffer is flushed to STT.
+8. STT returns text. In development the stub returns `What products does QWR make?`; in real calls Deepgram or Google returns the caller transcript.
+9. The transcript is passed to `QWRAgent.chat()`. The agent fetches relevant QWR website context, builds a prompt from the QWR system instructions plus recent call history, and sends it to Gemini, OpenAI, or Anthropic depending on `AI_PROVIDER`.
+10. The agent reply is synthesized to PCM with gTTS or Google TTS.
+11. The PCM is chunked into Exotel-sized frames, base64 encoded, streamed back as `media` events, and closed with a `mark` named `qwr-reply-complete`.
+12. On `stop` or WebSocket disconnect, playback/tasks are cancelled and the call transcript plus runtime summary is written to logs.
+
+DTMF input is also supported. When Exotel sends a keypad digit, the consumer records it and routes it into the same AI pipeline as a text override such as `User pressed key 1 on keypad`.
+
+Barge-in is partially supported for greeting/playback. If enough caller speech chunks are detected while playback is active, the consumer cancels local playback so the caller can interrupt the bot.
 
 ## Current Architecture
 
 - `qwr_voicebot.asgi` wires HTTP and WebSocket traffic.
 - `telephony.routing` exposes `/ws/exotel/voicebot/`.
 - `telephony.consumers.ExotelVoicebotConsumer` extends `AsyncJsonWebsocketConsumer` and maps each Exotel event to an explicit handler.
-- `telephony.audio` contains PCM generation/chunking helpers.
+- `telephony.audio` contains PCM generation, loading, conversion, base64, and chunking helpers.
+- `ai_agent.agent.QWRAgent` manages per-call conversation memory, QWR system instructions, and live website context.
+- `ai_agent.stt` abstracts stub, Deepgram, and Google Speech-to-Text providers.
+- `ai_agent.tts` abstracts gTTS, Google Cloud Text-to-Speech, and test silence generation.
+- `ai_agent.providers` abstracts Gemini, OpenAI, and Anthropic chat providers.
+- `ai_agent.tools.qwr_scraper` fetches and caches selected `questionwhatsreal.com` pages for grounded QWR answers.
 
-## Next Milestones
+## Current Limitations
 
-The broader assignment roadmap lives in `TASKS.md`. The immediate next engineering step is to replace the generated tone with a voice pipeline:
+The broader assignment roadmap lives in `TASKS.md`. The core call loop works, but these pieces are still pending or partial:
 
-1. stream inbound Exotel PCM to STT or a realtime voice model,
-2. inject the selected QWR conversation mode prompt,
-3. stream synthesized response audio back as Exotel `media` frames,
-4. persist call metadata and speaker-labeled transcript turns.
+- Call/profile/transcript persistence is not yet written to Supabase/Postgres.
+- Mode selection for Think, Challenge, Explore, and Guide is not yet implemented.
+- No Exotel webhook/passthru endpoint is present yet for recording and terminal metadata.
+- STT is turn-based after silence, not true realtime partial transcription.
+- TTS replies are generated after full LLM text completion, not streamed token-by-token.
+- Dashboard, summaries, delivery, WER reports, and measured latency reports are still roadmap items.
