@@ -13,16 +13,19 @@ from .base import LLMProvider, Message
 logger = logging.getLogger(__name__)
 
 GEMINI_FALLBACK_MODELS = (
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-3-flash-preview",
     "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
 )
 
 
 class GeminiProvider(LLMProvider):
     """LLM provider backed by Google Gemini."""
 
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash") -> None:
+    def __init__(self, api_key: str, model: str = "gemini-3.5-flash") -> None:
         self._api_key = api_key
         self._model = model
         self._client = self._build_client()
@@ -146,4 +149,9 @@ def _is_unavailable_model_error(exc: Exception) -> bool:
         "is not found" in message
         or "not_found" in message
         or "not supported for generatecontent" in message
+        or "quota" in message
+        or "exhausted" in message
+        or "429" in message
+        or "resource_exhausted" in message
+        or "limit" in message
     )
