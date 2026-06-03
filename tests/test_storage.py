@@ -52,12 +52,14 @@ class StorageTests(TransactionTestCase):
                 from_number="9999999999",
                 to_number="020 1234 5678",
                 direction="incoming",
+                recording_url="https://api.exotel.com/v1/Recordings/rec-123",
             )
             self.assertEqual(call["call_sid"], call_sid)
             self.assertEqual(call["status"], "initiated")
             self.assertEqual(call["from_number"], phone)
             self.assertEqual(call["to_number"], "+912012345678")
             self.assertEqual(call["direction"], "incoming")
+            self.assertEqual(call["recording_url"], "https://api.exotel.com/v1/Recordings/rec-123")
             self.assertIsNotNone(call["profile_id"])
 
             # 2. Insert transcript turns
@@ -74,10 +76,12 @@ class StorageTests(TransactionTestCase):
             # 3. Update call status
             updated_call = await self.storage.update_call(call_sid, {
                 "status": "completed",
-                "duration": 45
+                "duration": 45,
+                "recording_url": "https://api.exotel.com/v1/Recordings/rec-456",
             })
             self.assertEqual(updated_call["status"], "completed")
             self.assertEqual(updated_call["duration"], 45)
+            self.assertEqual(updated_call["recording_url"], "https://api.exotel.com/v1/Recordings/rec-456")
             self.assertIsNotNone(updated_call["completed_on"])
 
             # 4. Save call summary

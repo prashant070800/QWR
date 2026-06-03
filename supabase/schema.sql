@@ -1,6 +1,6 @@
 -- Profiles table to store caller information
 CREATE TABLE IF NOT EXISTS profiles (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id BIGSERIAL PRIMARY KEY,
     phone TEXT UNIQUE NOT NULL,
     name TEXT,
     company TEXT,
@@ -13,41 +13,43 @@ CREATE TABLE IF NOT EXISTS profiles (
 
 -- Calls table to track individual calls
 CREATE TABLE IF NOT EXISTS calls (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id BIGSERIAL PRIMARY KEY,
     call_sid TEXT UNIQUE NOT NULL,
     stream_sid TEXT,
     from_number TEXT NOT NULL,
     to_number TEXT,
     direction TEXT NOT NULL DEFAULT 'incoming' CHECK (direction IN ('incoming', 'outgoing')),
-    caller_number TEXT NOT NULL,
     selected_mode TEXT, -- Think, Challenge, Explore, Guide
     duration INTEGER DEFAULT 0, -- Duration in seconds
     status TEXT NOT NULL, -- e.g. initiated, in-progress, completed, failed
-    profile_id UUID REFERENCES profiles(id) ON DELETE SET NULL,
+    profile_id BIGINT REFERENCES profiles(id) ON DELETE SET NULL,
     completed_on TIMESTAMP WITH TIME ZONE,
+    recording_url TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
 -- Transcript Turns table to log individual dialogue turns
 CREATE TABLE IF NOT EXISTS transcript_turns (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    call_id UUID REFERENCES calls(id) ON DELETE CASCADE NOT NULL,
+    id BIGSERIAL PRIMARY KEY,
+    call_id BIGINT REFERENCES calls(id) ON DELETE CASCADE NOT NULL,
     seq_number INTEGER NOT NULL,
     speaker TEXT NOT NULL, -- 'user' or 'assistant'
     text TEXT NOT NULL,
     latency_ms INTEGER, -- measured response latency in ms
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
 -- Summaries table to store post-call summaries
 CREATE TABLE IF NOT EXISTS summaries (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    call_id UUID REFERENCES calls(id) ON DELETE CASCADE UNIQUE NOT NULL,
+    id BIGSERIAL PRIMARY KEY,
+    call_id BIGINT REFERENCES calls(id) ON DELETE CASCADE UNIQUE NOT NULL,
     summary_text TEXT NOT NULL,
     delivery_status TEXT NOT NULL, -- pending, sent, failed, none
     destination TEXT, -- email address or phone number
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
 -- Indexes for performance lookups

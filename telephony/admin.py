@@ -42,13 +42,14 @@ class CallAdmin(admin.ModelAdmin):
         'duration_display',
         'completed_on',
         'selected_mode',
+        'recording_url',
         'created_at',
     )
-    search_fields = ('call_sid', 'stream_sid', 'from_number', 'to_number', 'caller_number')
+    search_fields = ('call_sid', 'stream_sid', 'from_number', 'to_number')
     list_filter = ('direction', 'status', 'selected_mode', 'completed_on', 'created_at')
     ordering = ('-created_at',)
     inlines = [TranscriptTurnInline, SummaryInline]
-    readonly_fields = ('created_at', 'updated_at')
+    readonly_fields = ('created_at', 'updated_at', 'recording_url')
 
     def duration_display(self, obj):
         return f"{obj.duration}s"
