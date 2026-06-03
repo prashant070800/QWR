@@ -185,7 +185,7 @@ class CallStorage:
             )
             return self._model_to_dict(call)
 
-    async def update_call(self, call_sid: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def update_call(self, call_sid: str, updates: Dict[str, Any], call_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Update call properties."""
         updates = dict(updates)
         for key in ("from_number", "to_number", "caller_number"):
@@ -196,7 +196,7 @@ class CallStorage:
             updates["completed_on"] = completed_on.isoformat() if self.use_supabase else completed_on
 
         if self.use_supabase:
-            url = f"{self.supabase_url}/rest/v1/calls?call_sid=eq.{call_sid}"
+            url = f"{self.supabase_url}/rest/v1/calls?id=eq.{call_id}" if call_id else f"{self.supabase_url}/rest/v1/calls?call_sid=eq.{call_sid}"
             updates["updated_at"] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
             headers_prefer = {**self.headers, "Prefer": "return=representation"}
             async with httpx.AsyncClient() as client:
@@ -208,25 +208,31 @@ class CallStorage:
             return None
         else:
             from telephony.models import Call
-            await Call.objects.filter(call_sid=call_sid).aupdate(**updates)
-            call = await Call.objects.filter(call_sid=call_sid).afirst()
+            if call_id:
+                call = await Call.objects.filter(id=call_id).afirst()
+            else:
+                call = await Call.objects.filter(call_sid=call_sid).afirst()
+            if call:
+                for key, val in updates.items():
+                    setattr(call, key, val)
+                await call.asave()
             return self._model_to_dict(call) if call else None
 
     # ------------------------------------------------------------------
     # Transcript Turns API
     # ------------------------------------------------------------------
 
-    async def insert_transcript_turn(self, call_sid: str, speaker: str, text: str, latency_ms: Optional[int] = None) -> Dict[str, Any]:
+    async def insert_transcript_turn(self, call_sid: str, speaker: str, text: str, latency_ms: Optional[int] = None, call_id: Optional[str] = None) -> Dict[str, Any]:
         """Insert a speaker-labeled turn linked to the call session."""
-        call_id = None
         if self.use_supabase:
-            url = f"{self.supabase_url}/rest/v1/calls?call_sid=eq.{call_sid}"
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url, headers=self.headers)
-                if resp.status_code == 200:
-                    calls = resp.json()
-                    if calls:
-                        call_id = calls[0]["id"]
+            if not call_id:
+                url = f"{self.supabase_url}/rest/v1/calls?call_sid=eq.{call_sid}"
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(url, headers=self.headers)
+                    if resp.status_code == 200:
+                        calls = resp.json()
+                        if calls:
+                            call_id = calls[0]["id"]
             
             if not call_id:
                 logger.error("Call ID not found for call_sid=%s when inserting turn", call_sid)
@@ -266,9 +272,12 @@ class CallStorage:
             return payload
         else:
             from telephony.models import Call, TranscriptTurn
-            call = await Call.objects.filter(call_sid=call_sid).afirst()
+            if call_id:
+                call = await Call.objects.filter(id=call_id).afirst()
+            else:
+                call = await Call.objects.filter(call_sid=call_sid).afirst()
             if not call:
-                logger.error("Call ID not found for call_sid=%s when inserting turn in Django", call_sid)
+                logger.error("Call ID not found for call_id=%s/call_sid=%s when inserting turn in Django", call_id, call_sid)
                 return {}
             seq_number = await TranscriptTurn.objects.filter(call=call).acount() + 1
             turn = await TranscriptTurn.objects.acreate(
@@ -284,17 +293,17 @@ class CallStorage:
     # Summaries API
     # ------------------------------------------------------------------
 
-    async def save_summary(self, call_sid: str, summary_text: str, delivery_status: str = "none", destination: Optional[str] = None) -> Dict[str, Any]:
+    async def save_summary(self, call_sid: str, summary_text: str, delivery_status: str = "none", destination: Optional[str] = None, call_id: Optional[str] = None) -> Dict[str, Any]:
         """Save a call summary record."""
-        call_id = None
         if self.use_supabase:
-            url = f"{self.supabase_url}/rest/v1/calls?call_sid=eq.{call_sid}"
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url, headers=self.headers)
-                if resp.status_code == 200:
-                    calls = resp.json()
-                    if calls:
-                        call_id = calls[0]["id"]
+            if not call_id:
+                url = f"{self.supabase_url}/rest/v1/calls?call_sid=eq.{call_sid}"
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(url, headers=self.headers)
+                    if resp.status_code == 200:
+                        calls = resp.json()
+                        if calls:
+                            call_id = calls[0]["id"]
             
             if not call_id:
                 logger.error("Call ID not found for call_sid=%s when saving summary", call_sid)
@@ -322,9 +331,12 @@ class CallStorage:
             return payload
         else:
             from telephony.models import Call, Summary
-            call = await Call.objects.filter(call_sid=call_sid).afirst()
+            if call_id:
+                call = await Call.objects.filter(id=call_id).afirst()
+            else:
+                call = await Call.objects.filter(call_sid=call_sid).afirst()
             if not call:
-                logger.error("Call ID not found for call_sid=%s when saving summary in Django", call_sid)
+                logger.error("Call ID not found for call_id=%s/call_sid=%s when saving summary in Django", call_id, call_sid)
                 return {}
             summary = await Summary.objects.acreate(
                 call=call,

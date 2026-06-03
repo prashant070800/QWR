@@ -15,12 +15,21 @@ class SummaryInline(admin.StackedInline):
     readonly_fields = ('summary_text', 'delivery_status', 'destination', 'created_at')
     can_delete = False
 
+class CallInline(admin.TabularInline):
+    model = Call
+    extra = 0
+    fields = ('call_sid', 'from_number', 'to_number', 'direction', 'status', 'duration', 'completed_on', 'created_at')
+    readonly_fields = ('call_sid', 'from_number', 'to_number', 'direction', 'status', 'duration', 'completed_on', 'created_at')
+    show_change_link = True
+    can_delete = False
+
 @admin.register(Profile)
 class ProfileAdmin(admin.ModelAdmin):
     list_display = ('phone', 'name', 'company', 'role', 'city', 'email', 'created_at')
     search_fields = ('phone', 'name', 'company', 'role', 'city', 'email')
     list_filter = ('created_at',)
     ordering = ('-created_at',)
+    inlines = [CallInline]
 
 @admin.register(Call)
 class CallAdmin(admin.ModelAdmin):

@@ -297,6 +297,10 @@ class QWRAgent:
         if user_text and not audio_bytes:
             user_transcript = user_text
 
+        # Return empty reply early if user transcript is silence/empty to avoid repeating greetings
+        if user_transcript.strip().lower() in ("", "[silence]", "silence"):
+            return user_transcript, ""
+
         latency_ms = (time.monotonic() - t0) * 1000
 
         # Step 6: record turns
@@ -462,3 +466,36 @@ class QWRAgent:
         except Exception as exc:
             logger.error("Vector search failed for domain=%s query=%r: %s", self.domain, search_query, exc)
             return await self._scraper.get_context(query)
+
+    async def generate_summary(self, turns: list[dict[str, Any]]) -> str:
+        """Generate a concise summary of the conversation turns using the configured LLM."""
+        if not turns:
+            return "No conversation turns recorded."
+
+        formatted_turns = []
+        for turn in sorted(turns, key=lambda t: t.get("seq_number", 0)):
+            speaker = str(turn.get("speaker", "unknown")).upper()
+            text = turn.get("text", "")
+            formatted_turns.append(f"{speaker}: {text}")
+
+        transcript_str = "\n".join(formatted_turns)
+
+        prompt = (
+            "Summarize the following phone conversation between a user and an AI assistant. "
+            "Focus on the user's inquiry, the outcome, and any next steps.\n\n"
+            f"Transcript:\n{transcript_str}\n\n"
+            "Summary:"
+        )
+
+        from ai_agent.providers.gemini_provider import Message
+        messages = [
+            Message(role="system", content="You are a helpful assistant that summarizes telephone calls."),
+            Message(role="user", content=prompt)
+        ]
+
+        try:
+            summary = await self._llm.chat(messages, max_tokens=256)
+            return summary.strip()
+        except Exception as exc:
+            logger.exception("%s Failed to generate summary via LLM: %s", self._log_prefix, exc)
+            return f"Summary generation failed: {exc}"
