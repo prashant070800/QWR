@@ -78,7 +78,7 @@ class TranscriptTurn(models.Model):
 
 class Summary(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    call = models.ForeignKey(Call, on_delete=models.CASCADE, related_name="summaries")
+    call = models.ForeignKey(Call, on_delete=models.CASCADE, related_name="summaries", unique=True)
     summary_text = models.TextField()
     delivery_status = models.CharField(max_length=100)
     destination = models.CharField(max_length=255, blank=True, null=True)

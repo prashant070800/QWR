@@ -184,7 +184,8 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                     updates={
                         "status": "completed",
                         "duration": int(duration_s),
-                    }
+                    },
+                    call_id=self.state.call_id,
                 )
             except Exception as exc:
                 logger.error("%s Failed to update call status at disconnect: %s", self.state.log_prefix, exc)
@@ -501,7 +502,8 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                         call_sid=self.state.call_sid,
                         speaker="assistant",
                         text=greeting,
-                        latency_ms=0
+                        latency_ms=0,
+                        call_id=self.state.call_id,
                     )
                 except Exception as exc:
                     logger.error("%s Failed to save greeting turn to storage: %s", log_prefix, exc)
@@ -580,13 +582,15 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                     await self.storage.insert_transcript_turn(
                         call_sid=call_sid,
                         speaker="user",
-                        text=transcript
+                        text=transcript,
+                        call_id=self.state.call_id,
                     )
                     await self.storage.insert_transcript_turn(
                         call_sid=call_sid,
                         speaker="assistant",
                         text=reply,
-                        latency_ms=int(latency_ms)
+                        latency_ms=int(latency_ms),
+                        call_id=self.state.call_id,
                     )
                 except Exception as exc:
                     logger.error("%s Failed to save turns to storage: %s", self.state.log_prefix, exc)

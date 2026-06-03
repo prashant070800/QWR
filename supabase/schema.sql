@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS transcript_turns (
 -- Summaries table to store post-call summaries
 CREATE TABLE IF NOT EXISTS summaries (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    call_id UUID REFERENCES calls(id) ON DELETE CASCADE NOT NULL,
+    call_id UUID REFERENCES calls(id) ON DELETE CASCADE UNIQUE NOT NULL,
     summary_text TEXT NOT NULL,
     delivery_status TEXT NOT NULL, -- pending, sent, failed, none
     destination TEXT, -- email address or phone number
