@@ -162,6 +162,14 @@ class AgentSettings:
         default_factory=lambda: _env("AI_SYSTEM_PROMPT", "")
     )
 
+    # ── Telegram settings ──
+    telegram_bot_token: str = field(
+        default_factory=lambda: _env("TELEGRAM_BOT_TOKEN", "")
+    )
+    telegram_chat_id: str = field(
+        default_factory=lambda: _env("TELEGRAM_CHAT_ID", "")
+    )
+
     def validate(self) -> None:
         """Raise ValueError for obviously wrong configurations."""
         provider = self.ai_provider.lower()
