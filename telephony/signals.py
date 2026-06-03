@@ -4,6 +4,7 @@ from django.db import transaction
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from telephony.models import Call
+from telephony.notifications import dispatch_summary_notification
 
 logger = logging.getLogger(__name__)
 
@@ -88,15 +89,15 @@ async def _generate_and_send_summary_async(call_id):
 
 async def _send_notification_async(summary_id):
     from telephony.models import Summary
+
     summary = await Summary.objects.select_related('call').filter(id=summary_id).afirst()
     if not summary:
         return
 
     logger.info("[SIGNAL] Triggering delivery for summary_id=%s destination=%s", summary_id, summary.destination)
 
-    # Delivery function logging
     try:
-        success = await mock_deliver_notification(
+        success = await dispatch_summary_notification(
             summary_text=summary.summary_text,
             phone=summary.call.from_number,
             email=None,
@@ -110,13 +111,3 @@ async def _send_notification_async(summary_id):
         summary.delivery_status = "failed"
 
     await summary.asave(update_fields=["delivery_status"])
-
-async def mock_deliver_notification(summary_text: str, phone: str | None = None, email: str | None = None) -> bool:
-    """Mock notification delivery function. Logs the delivery details."""
-    logger.info(
-        "📞 [MOCK NOTIFICATION] Deliver summary: %r | Phone: %s | Email: %s",
-        summary_text,
-        phone,
-        email,
-    )
-    return True

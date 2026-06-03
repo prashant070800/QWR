@@ -6,7 +6,7 @@ from telephony.models import Call, TranscriptTurn, Summary
 class SummarySignalTests(TransactionTestCase):
     @patch("telephony.signals.run_in_background")
     @patch("ai_agent.agent.QWRAgent.generate_summary", new_callable=AsyncMock)
-    @patch("telephony.signals.mock_deliver_notification", new_callable=AsyncMock)
+    @patch("telephony.signals.dispatch_summary_notification", new_callable=AsyncMock)
     def test_summary_generation_signal_flow(self, mock_deliver, mock_gen_summary, mock_run_bg):
         # Setup mocks
         mock_gen_summary.return_value = "Mocked call summary text."
