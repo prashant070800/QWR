@@ -209,11 +209,13 @@ class CallStorage:
         else:
             from telephony.models import Call
             if call_id:
-                await Call.objects.filter(id=call_id).aupdate(**updates)
                 call = await Call.objects.filter(id=call_id).afirst()
             else:
-                await Call.objects.filter(call_sid=call_sid).aupdate(**updates)
                 call = await Call.objects.filter(call_sid=call_sid).afirst()
+            if call:
+                for key, val in updates.items():
+                    setattr(call, key, val)
+                await call.asave()
             return self._model_to_dict(call) if call else None
 
     # ------------------------------------------------------------------

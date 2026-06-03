@@ -81,7 +81,20 @@ class QWRScraper:
     def __init__(self, cache_ttl_seconds: int = 3600) -> None:
         self._cache: dict[str, _CacheEntry] = {}
         self._ttl = cache_ttl_seconds
-        self._fetch_lock = asyncio.Lock()
+        self._fetch_lock: asyncio.Lock | None = None
+        self._fetch_loop_ref = None
+
+    @property
+    def fetch_lock(self) -> asyncio.Lock:
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        if self._fetch_lock is None or self._fetch_loop_ref is not current_loop:
+            self._fetch_lock = asyncio.Lock()
+            self._fetch_loop_ref = current_loop
+        return self._fetch_lock
 
     # ------------------------------------------------------------------
     # Public API
@@ -104,14 +117,19 @@ class QWRScraper:
             query[:80],
         )
 
-        texts: list[str] = []
-        for key in page_keys[:3]:  # limit to 3 pages per query
+        async def _fetch_and_format(key: str) -> str | None:
             url = QWR_PAGES.get(key, "")
             if not url:
-                continue
+                return None
             text = await self._get_page(url)
             if text:
-                texts.append(f"=== Source: {url} ===\n{text}")
+                return f"=== Source: {url} ===\n{text}"
+            return None
+
+        # Fetch relevant pages in parallel to minimize network latency
+        tasks = [asyncio.create_task(_fetch_and_format(k)) for k in page_keys[:3]]
+        results = await asyncio.gather(*tasks)
+        texts = [res for res in results if res]
 
         combined = "\n\n".join(texts)
         logger.debug(
@@ -152,7 +170,7 @@ class QWRScraper:
             logger.debug("QWR cache hit url=%s", url)
             return cached.content
 
-        async with self._fetch_lock:
+        async with self.fetch_lock:
             # Re-check after acquiring lock (another task may have fetched)
             cached = self._cache.get(url)
             if cached and (time.monotonic() - cached.fetched_at) < self._ttl:

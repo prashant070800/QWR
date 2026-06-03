@@ -297,6 +297,10 @@ class QWRAgent:
         if user_text and not audio_bytes:
             user_transcript = user_text
 
+        # Return empty reply early if user transcript is silence/empty to avoid repeating greetings
+        if user_transcript.strip().lower() in ("", "[silence]", "silence"):
+            return user_transcript, ""
+
         latency_ms = (time.monotonic() - t0) * 1000
 
         # Step 6: record turns

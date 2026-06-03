@@ -71,6 +71,7 @@ class ExotelStreamState:
     audio_buffer: bytearray = field(default_factory=bytearray)
     silent_chunk_count: int = 0
     speech_chunk_count: int = 0
+    has_speech_in_buffer: bool = False
     last_inbound_chunk: str | int | None = None
     last_inbound_timestamp: str | int | None = None
     last_inbound_payload_chars: int = 0
@@ -380,6 +381,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             else:
                 self.state.silent_chunk_count = 0
                 self.state.speech_chunk_count += 1
+                self.state.has_speech_in_buffer = True
                 self._cancel_playback_for_barge_in()
 
             # if self.state.inbound_chunks % 50 == 0:
@@ -401,19 +403,20 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             and not (self.playback_task and not self.playback_task.done())
             and not self.state.is_playing
         ):
-            audio_data = bytes(self.state.audio_buffer)
-            self.state.audio_buffer      = bytearray()
-            self.state.silent_chunk_count = 0
-            self.state.is_processing_stt  = True
+            if self.state.has_speech_in_buffer:
+                audio_data = bytes(self.state.audio_buffer)
+                self.state.audio_buffer      = bytearray()
+                self.state.silent_chunk_count = 0
+                self.state.has_speech_in_buffer = False
+                self.state.is_processing_stt  = True
 
-            # logger.info(
-            #     "%s 🔇 Silence detected — flushing %d bytes to STT",
-            #     self.state.log_prefix,
-            #     len(audio_data),
-            # )
-            self.ai_task = asyncio.create_task(
-                self._handle_user_speech(audio_data)
-            )
+                self.ai_task = asyncio.create_task(
+                    self._handle_user_speech(audio_data)
+                )
+            else:
+                # Discard pure silence to prevent memory build-up and empty triggers
+                self.state.audio_buffer      = bytearray()
+                self.state.silent_chunk_count = 0
 
     async def on_dtmf(self, content: dict[str, Any]) -> None:
         dtmf  = content.get("dtmf") or {}
@@ -573,6 +576,16 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 self.agent._history.append(ConversationTurn(speaker="assistant", text=reply))
 
             latency_ms = (time.monotonic() - t_start) * 1000
+
+            # If user was silent, we skip saving, generating audio, and streaming
+            if not reply:
+                logger.info(
+                    "%s User was silent (transcript=%r). Skipping response and playback.",
+                    self.state.log_prefix,
+                    transcript,
+                )
+                return
+
             self.state.caller_transcripts.append(transcript)
             self.state.agent_replies.append(reply)
 
