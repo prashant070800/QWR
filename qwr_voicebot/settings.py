@@ -7,6 +7,7 @@ Copy `.env.example` to `.env` and fill in your values.
 from __future__ import annotations
 
 import os
+import importlib.util
 from pathlib import Path
 
 
@@ -38,6 +39,25 @@ INSTALLED_APPS = [
     "channels",
     "telephony",
 ]
+
+if importlib.util.find_spec("jazzmin"):
+    INSTALLED_APPS.insert(0, "jazzmin")
+
+JAZZMIN_SETTINGS = {
+    "site_title": "QWR Voice Bot Admin",
+    "site_header": "QWR Voice Bot",
+    "site_brand": "QWR Voice Bot",
+    "welcome_sign": "QWR AI Voice Bot Admin",
+    "copyright": "QWR Interactive Solutions",
+    "show_sidebar": True,
+    "navigation_expanded": True,
+    "icons": {
+        "telephony.Profile": "fas fa-user",
+        "telephony.Call": "fas fa-phone",
+        "telephony.TranscriptTurn": "fas fa-comments",
+        "telephony.Summary": "fas fa-file-alt",
+    },
+}
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
