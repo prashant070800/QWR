@@ -72,10 +72,7 @@ class CallStorage:
                     if profiles:
                         return profiles[0]
                 
-                # Create profile since it doesn't exist
-                new_id = str(uuid.uuid4())
                 payload = {
-                    "id": new_id,
                     "phone": phone,
                     "created_at": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                     "updated_at": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
@@ -91,6 +88,7 @@ class CallStorage:
                     if created_list:
                         return created_list[0]
                 
+                payload["id"] = 0
                 return payload
         else:
             from telephony.models import Profile
@@ -133,6 +131,7 @@ class CallStorage:
         from_number: str | None = None,
         to_number: str | None = None,
         direction: str = "incoming",
+        recording_url: str | None = None,
     ) -> Dict[str, Any]:
         """Create a new call entry linked to the caller's profile."""
         normalized_from = to_e164(from_number or caller_number)
@@ -144,17 +143,15 @@ class CallStorage:
         profile_id = profile["id"]
         
         if self.use_supabase:
-            new_id = str(uuid.uuid4())
             payload = {
-                "id": new_id,
                 "call_sid": call_sid,
                 "stream_sid": stream_sid,
                 "from_number": normalized_from,
                 "to_number": normalized_to,
                 "direction": normalized_direction,
-                "caller_number": normalized_caller,
                 "status": "initiated",
                 "profile_id": profile_id,
+                "recording_url": recording_url,
                 "created_at": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                 "updated_at": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
             }
@@ -169,6 +166,7 @@ class CallStorage:
                     created = resp.json()
                     if created:
                         return created[0]
+            payload["id"] = 0
             return payload
         else:
             from telephony.models import Profile, Call
@@ -179,18 +177,21 @@ class CallStorage:
                 from_number=normalized_from,
                 to_number=normalized_to,
                 direction=normalized_direction,
-                caller_number=normalized_caller,
                 status="initiated",
                 profile=prof,
+                recording_url=recording_url,
             )
             return self._model_to_dict(call)
 
-    async def update_call(self, call_sid: str, updates: Dict[str, Any], call_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    async def update_call(self, call_sid: str, updates: Dict[str, Any], call_id: Optional[Any] = None) -> Optional[Dict[str, Any]]:
         """Update call properties."""
         updates = dict(updates)
         for key in ("from_number", "to_number", "caller_number"):
             if key in updates:
-                updates[key] = to_e164(updates[key])
+                if key == "caller_number":
+                    updates.pop("caller_number", None)
+                else:
+                    updates[key] = to_e164(updates[key])
         if updates.get("status") == "completed" and not updates.get("completed_on"):
             completed_on = timezone.now()
             updates["completed_on"] = completed_on.isoformat() if self.use_supabase else completed_on
@@ -249,9 +250,7 @@ class CallStorage:
                     except ValueError:
                         pass
             
-            new_id = str(uuid.uuid4())
             payload = {
-                "id": new_id,
                 "call_id": call_id,
                 "seq_number": seq_number,
                 "speaker": speaker,
@@ -269,6 +268,7 @@ class CallStorage:
                 created = resp_insert.json()
                 if created:
                     return created[0]
+            payload["id"] = 0
             return payload
         else:
             from telephony.models import Call, TranscriptTurn
@@ -309,9 +309,7 @@ class CallStorage:
                 logger.error("Call ID not found for call_sid=%s when saving summary", call_sid)
                 return {}
                 
-            new_id = str(uuid.uuid4())
             payload = {
-                "id": new_id,
                 "call_id": call_id,
                 "summary_text": summary_text,
                 "delivery_status": delivery_status,
@@ -328,6 +326,7 @@ class CallStorage:
                 created = resp_insert.json()
                 if created:
                     return created[0]
+            payload["id"] = 0
             return payload
         else:
             from telephony.models import Call, Summary
