@@ -47,14 +47,18 @@ class CallAdmin(admin.ModelAdmin):
 
 @admin.register(TranscriptTurn)
 class TranscriptTurnAdmin(admin.ModelAdmin):
-    list_display = ('call_link', 'seq_number', 'speaker', 'text_truncated', 'latency_display', 'created_at')
+    list_display = ('call_pk', 'call_sid_link', 'seq_number', 'speaker', 'text_truncated', 'latency_display', 'created_at')
     list_filter = ('speaker', 'created_at')
-    search_fields = ('call__call_sid', 'text')
+    search_fields = ('call__id', 'call__call_sid', 'text')
     ordering = ('call', 'seq_number')
 
-    def call_link(self, obj):
+    def call_pk(self, obj):
+        return format_html('<a href="/admin/telephony/call/{}/change/">{}</a>', obj.call.id, obj.call.id)
+    call_pk.short_description = "Call PK"
+
+    def call_sid_link(self, obj):
         return format_html('<a href="/admin/telephony/call/{}/change/">{}</a>', obj.call.id, obj.call.call_sid)
-    call_link.short_description = "Call SID"
+    call_sid_link.short_description = "Call SID"
 
     def text_truncated(self, obj):
         if len(obj.text) > 75:

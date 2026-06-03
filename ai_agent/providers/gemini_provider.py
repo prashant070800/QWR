@@ -33,7 +33,8 @@ class GeminiProvider(LLMProvider):
     def _build_client(self):  # type: ignore[return]
         try:
             import google.generativeai as genai  # type: ignore[import-untyped]
-            genai.configure(api_key=self._api_key)
+            api_key = self._api_key.strip("'\"")
+            genai.configure(api_key=api_key, transport="rest")
             return genai
         except ImportError as exc:
             raise ImportError(

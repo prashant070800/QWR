@@ -185,10 +185,10 @@ class QWRAgent:
     designed to be used from a single asyncio task (the WebSocket consumer).
     """
 
-    def __init__(
-        self,
+    def __init__(self,
         call_sid: str | None = None,
         stream_sid: str | None = None,
+        call_id: str | None = None,
         llm: LLMProvider | None = None,
         scraper: QWRScraper | None = None,
         system_prompt: str | None = None,
@@ -196,6 +196,7 @@ class QWRAgent:
         welcome_message: str | None = None,
         business_url: str | None = None,
     ) -> None:
+        self.call_id = call_id or "unknown"
         self.call_sid = call_sid or "unknown"
         self.stream_sid = stream_sid or "unknown"
 
@@ -215,7 +216,7 @@ class QWRAgent:
         trigger_crawl(self.business_url)
 
         self._history: list[ConversationTurn] = []
-        self._log_prefix = f"call_sid={self.call_sid} stream_sid={self.stream_sid}"
+        self._log_prefix = f"call_id={self.call_id} call_sid={self.call_sid} stream_sid={self.stream_sid}"
 
         self.agent_name = agent_name or settings.ai_agent_name
         self.welcome_message = welcome_message or settings.ai_welcome_message
@@ -359,11 +360,13 @@ class QWRAgent:
             for turn in self._history
         ]
 
-    def update_call_ids(self, call_sid: str, stream_sid: str) -> None:
+    def update_call_ids(self, call_sid: str, stream_sid: str, call_id: str | None = None) -> None:
         """Update call identifiers (available after Exotel 'start' event)."""
         self.call_sid = call_sid
         self.stream_sid = stream_sid
-        self._log_prefix = f"call_sid={self.call_sid} stream_sid={self.stream_sid}"
+        if call_id:
+            self.call_id = call_id
+        self._log_prefix = f"call_id={self.call_id} call_sid={self.call_sid} stream_sid={self.stream_sid}"
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -63,6 +63,8 @@ class ExotelStreamState:
     from_number: str | None = None
     to_number: str | None = None
     media_format: dict[str, Any] = field(default_factory=dict)
+    call_id: str | None = None
+    ai_ready: bool = False
 
     # Inbound audio accumulation
     inbound_chunks: int = 0
@@ -100,7 +102,7 @@ class ExotelStreamState:
 
     @property
     def log_prefix(self) -> str:
-        return f"call_sid={self.call_sid or 'pending'} stream_sid={self.stream_sid or 'pending'}"
+        return f"call_id={self.call_id or 'pending'} call_sid={self.call_sid or 'pending'} stream_sid={self.stream_sid or 'pending'}"
 
 
 # ---------------------------------------------------------------------------
@@ -273,17 +275,17 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         self._validate_media_format()
 
         # Create Call and Profile records in database
-        if self.state.from_number:
-            try:
-                await self.storage.create_call(
-                    call_sid=self.state.call_sid or f"unknown-sid",
-                    stream_sid=self.state.stream_sid,
-                    from_number=self.state.from_number,
-                    to_number=self.state.to_number,
-                    direction="incoming",
-                )
-            except Exception as exc:
-                logger.error("%s Failed to save call/profile record to storage: %s", self.state.log_prefix, exc)
+        try:
+            call_data = await self.storage.create_call(
+                call_sid=self.state.call_sid or f"unknown-sid",
+                stream_sid=self.state.stream_sid or f"unknown-sid",
+                from_number=self.state.from_number,
+                to_number=self.state.to_number,
+                direction="incoming",
+            )
+            self.state.call_id = call_data.get("id")
+        except Exception as exc:
+            logger.error("%s Failed to save call/profile record to storage: %s", self.state.log_prefix, exc)
 
         logger.info(
             "%s 📞 Exotel stream STARTED from=%s to=%s media_format=%s "
@@ -297,20 +299,30 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         )
 
         # Create the per-call AI agent
+        t_init_start = time.monotonic()
         self.agent = QWRAgent(
             call_sid=self.state.call_sid,
             stream_sid=self.state.stream_sid,
+            call_id=self.state.call_id,
             system_prompt=self.aiagent_prompt,
             agent_name=self.aiagent_name,
             welcome_message=self.welcome_message,
             business_url=self.business_url,
         )
+        init_duration = time.monotonic() - t_init_start
+        logger.info(
+            "%s 🤖 AI agent initialized in %.4f seconds",
+            self.state.log_prefix,
+            init_duration,
+        )
+
+        self.state.ai_ready = True
 
         # Stream greeting immediately.
         self.playback_task = asyncio.create_task(self._play_greeting())
 
     async def on_media(self, content: dict[str, Any]) -> None:
-        if not self.agent:
+        if not self.agent or not self.state.ai_ready:
             return
         self.state.inbound_chunks += 1
         media = content.get("media") or {}
@@ -581,7 +593,8 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
 
             # Logger when user says something and what AI responds along with latency
             logger.info(
-                "USER: %s | AI: %s | Latency: %.2fms",
+                "%s USER: %s | AI: %s | Latency: %.2fms",
+                self.state.log_prefix,
                 transcript,
                 reply,
                 latency_ms,
@@ -628,6 +641,14 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         if self.state.is_stopped:
             logger.info(
                 "%s Not streaming audio mark=%s because call is stopped",
+                self.state.log_prefix,
+                mark_name,
+            )
+            return
+
+        if not self.state.ai_ready:
+            logger.info(
+                "%s Not streaming audio mark=%s because AI is not ready yet",
                 self.state.log_prefix,
                 mark_name,
             )
