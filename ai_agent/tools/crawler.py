@@ -22,9 +22,9 @@ class BusinessCrawler:
 
     def __init__(self, api_key: str | None = None) -> None:
         self.db = SQLiteVectorDB()
-        self.api_key = api_key or settings.gemini_api_key
+        self.api_key = (api_key or settings.gemini_api_key).strip("'\"")
         # Configure Gemini SDK
-        genai.configure(api_key=self.api_key)
+        genai.configure(api_key=self.api_key, transport="rest")
 
     async def crawl_and_index(self, base_url: str) -> None:
         """Crawl the website, generate embeddings, and store them in SQLiteVectorDB."""

@@ -41,11 +41,12 @@ class CallStorage:
             return {}
         data = {}
         for field in instance._meta.fields:
-            key_name = field.name
-            val = getattr(instance, field.name)
             if isinstance(field, models.ForeignKey):
                 key_name = f"{field.name}_id"
                 val = getattr(instance, f"{field.name}_id")
+            else:
+                key_name = field.name
+                val = getattr(instance, field.name)
             
             if isinstance(val, uuid.UUID):
                 data[key_name] = str(val)

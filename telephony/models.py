@@ -74,7 +74,7 @@ class TranscriptTurn(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"Turn {self.seq_number} ({self.speaker}) - Call {self.call.call_sid}"
+        return f"Turn {self.seq_number} ({self.speaker}) - Call PK {self.call_id}"
 
 class Summary(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

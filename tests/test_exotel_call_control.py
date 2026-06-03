@@ -29,6 +29,7 @@ class ExotelCallControlTests(IsolatedAsyncioTestCase):
                 "sample_rate": "8000",
                 "bit_rate": "128kbps",
             },
+            ai_ready=True,
         )
         consumer.playback_task = None
         consumer.ai_task = None
