@@ -65,7 +65,7 @@ async def synthesize_speech(
         provider,
         len(text),
         speaking_rate,
-        text[:80],
+        text,
     )
 
     if provider == "gtts":
@@ -118,11 +118,11 @@ async def _gtts_synthesize(text: str, sample_rate: int, log_prefix: str, speakin
         mp3_buf.seek(0)
         mp3_bytes = mp3_buf.read()
 
-        logger.debug(
-            "%s gTTS MP3 size=%d bytes",
-            log_prefix,
-            len(mp3_bytes),
-        )
+        # logger.debug(
+        #     "%s gTTS MP3 size=%d bytes",
+        #     log_prefix,
+        #     len(mp3_bytes),
+        # )
 
         # Convert MP3 → PCM using pydub (preferred)
         try:

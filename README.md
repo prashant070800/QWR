@@ -95,7 +95,7 @@ The live call path is implemented in `telephony.consumers.ExotelVoicebotConsumer
 6. Exotel `media` events arrive with base64 audio. The consumer decodes each chunk into PCM, appends it to the current audio buffer, and tracks silence/speech chunks.
 7. When enough silence is detected after speech (`STT_SILENCE_CHUNKS`, default `10`) and at least one second of audio is buffered, the buffer is flushed to STT.
 8. STT returns text. In development the stub returns `What products does QWR make?`; in real calls Deepgram or Google returns the caller transcript.
-9. The transcript is passed to `QWRAgent.chat()`. The agent fetches relevant QWR website context, builds a prompt from the QWR system instructions plus recent call history, and sends it to Gemini, OpenAI, or Anthropic depending on `AI_PROVIDER`.
+9. The transcript is passed to `QWRAgent.chat()`. The agent builds a prompt from the QWR system instructions plus recent call history, and sends it to Gemini, OpenAI, or Anthropic depending on `AI_PROVIDER`.
 10. The agent reply is synthesized to PCM with gTTS or Google TTS.
 11. The PCM is chunked into Exotel-sized frames, base64 encoded, streamed back as `media` events, and closed with a `mark` named `qwr-reply-complete`.
 12. On `stop` or WebSocket disconnect, playback/tasks are cancelled and the call transcript plus runtime summary is written to logs.
@@ -110,11 +110,11 @@ Barge-in is supported for greeting and reply playback. If enough non-silent call
 - `telephony.routing` exposes `/ws/exotel/voicebot/`.
 - `telephony.consumers.ExotelVoicebotConsumer` extends `AsyncJsonWebsocketConsumer` and maps each Exotel event to an explicit handler.
 - `telephony.audio` contains PCM generation, loading, conversion, base64, and chunking helpers.
-- `ai_agent.agent.QWRAgent` manages per-call conversation memory, QWR system instructions, and live website context.
+- `ai_agent.agent.QWRAgent` manages per-call conversation memory and QWR system instructions.
 - `ai_agent.stt` abstracts stub, Deepgram, and Google Speech-to-Text providers.
 - `ai_agent.tts` abstracts gTTS, Google Cloud Text-to-Speech, and test silence generation.
 - `ai_agent.providers` abstracts Gemini, OpenAI, and Anthropic chat providers.
-- `ai_agent.tools.qwr_scraper` fetches and caches selected `questionwhatsreal.com` pages for grounded QWR answers.
+
 
 ## Current Limitations
 

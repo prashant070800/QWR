@@ -92,10 +92,6 @@ class AgentSettings:
     qwr_website_url: str = field(
         default_factory=lambda: _env("QWR_WEBSITE_URL", "https://questionwhatsreal.com/")
     )
-    # How long (seconds) to cache scraped page content in memory
-    qwr_cache_ttl_seconds: int = field(
-        default_factory=lambda: int(_env("QWR_CACHE_TTL_SECONDS", "3600"))
-    )
 
     # ------------------------------------------------------------------ #
     # Supabase persistence settings                                      #

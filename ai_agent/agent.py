@@ -16,10 +16,11 @@ import logging
 import time
 from dataclasses import dataclass, field
 
+from typing import Any
+
 from ai_agent.config import settings
 from ai_agent.providers.base import LLMProvider, Message
 from ai_agent.providers.factory import get_llm_provider
-from ai_agent.tools.qwr_scraper import QWRScraper
 
 logger = logging.getLogger(__name__)
 
@@ -51,15 +52,15 @@ Key facts about QWR:
 - Defence: DAP 2020 Buy Indian (IDDM) eligible, MIL-STD-810H compliant, no foreign backdoors.
 
 Important guidelines:
-- Keep answers SHORT and conversational (2–3 sentences max) since this is a phone call.
+- Keep answers EXTREMELY SHORT, conversational, and direct (1 to 2 sentences maximum, under 25 words). Since this is a live phone call, long blocks of text are hard for the listener to digest.
 - Speak naturally, as if talking on the phone with a real person.
 - Use simple everyday words, contractions, and brief acknowledgements like "Sure" or "Got it" when they fit.
 - Do not sound like a script, brochure, or long FAQ answer.
-- Ask only one follow-up question at a time.
+- Ask only one follow-up question at a time, only when naturally necessary to continue the conversation.
 - Avoid bullet lists unless the caller explicitly asks for a list.
-- If you don't know something, say you'll connect them with the QWR team.
+- If you don't know something, say i do not know.
 - Do NOT make up specific prices, dates, or technical specs not in the context provided.
-- After answering, gently ask if the caller has more questions or would like a callback.
+- Avoid repeating the offer to callback or asking if they have more questions on every single turn unless the conversation has naturally reached its conclusion.
 """
 
 
@@ -190,7 +191,7 @@ class QWRAgent:
         stream_sid: str | None = None,
         call_id: str | None = None,
         llm: LLMProvider | None = None,
-        scraper: QWRScraper | None = None,
+        scraper: Any = None,
         system_prompt: str | None = None,
         agent_name: str | None = None,
         welcome_message: str | None = None,
@@ -202,18 +203,7 @@ class QWRAgent:
 
         self._llm: LLMProvider = llm or get_llm_provider(settings)
         
-        # Use shared scraper to avoid network latency on cache miss per call
-        from ai_agent.tools.qwr_scraper import shared_scraper, warm_up_cache
-        self._scraper: QWRScraper = scraper or shared_scraper
-        warm_up_cache()
-
         self.business_url = business_url or settings.qwr_website_url
-        from urllib.parse import urlparse
-        self.domain = urlparse(self.business_url).netloc.lower()
-
-        # Trigger background crawl and indexing if not already indexed
-        from ai_agent.tools.crawler import trigger_crawl
-        trigger_crawl(self.business_url)
 
         self._history: list[ConversationTurn] = []
         self._log_prefix = f"call_id={self.call_id} call_sid={self.call_sid} stream_sid={self.stream_sid}"
@@ -262,32 +252,27 @@ class QWRAgent:
         """Process a user utterance and return the agent's reply.
 
         Steps:
-        1. Fetch relevant QWR website context for this query.
-        2. Build message list (system prompt + history + context + user turn).
-        3. Send to configured LLM.
-        4. Record turn in history with latency.
-        5. Return (user_transcript, agent_reply) tuple.
+        1. Build message list (system prompt + history + user turn).
+        2. Send to configured LLM.
+        3. Record turn in history with latency.
+        4. Return (user_transcript, agent_reply) tuple.
         """
         t0 = time.monotonic()
 
-        # Step 1: fetch context from vector DB
-        qwr_context = await self._get_context_from_db(user_text or "")
-
-        # Step 2: convert audio if present
+        # Step 1: convert audio if present
         wav_bytes = None
         if audio_bytes:
             wav_bytes = pcm_to_wav(audio_bytes, sample_rate)
 
-        # Step 3: build messages
+        # Step 2: build messages
         audio_mime = "audio/wav" if wav_bytes else None
         messages = self._build_messages(
             user_text,
-            qwr_context,
             audio_data=wav_bytes,
             audio_mime=audio_mime,
         )
 
-        # Step 4: call LLM
+        # Step 3: call LLM
         raw_reply = await self._llm.chat(messages, max_tokens=settings.ai_max_tokens)
 
         # Step 5: parse structured response
@@ -379,7 +364,6 @@ class QWRAgent:
     def _build_messages(
         self,
         user_text: str | None,
-        qwr_context: str,
         audio_data: bytes | None = None,
         audio_mime: str | None = None,
     ) -> list[Message]:
@@ -387,16 +371,7 @@ class QWRAgent:
         messages: list[Message] = []
 
         # System prompt
-        system_content = self.system_prompt
-        if qwr_context:
-            system_content += (
-                f"\n\n--- LIVE WEBSITE CONTEXT FOR {self.business_url} ---\n"
-                "Use the following live content from the business website "
-                "to answer accurately:\n\n"
-                + qwr_context
-            )
-
-        messages.append(Message(role="system", content=system_content))
+        messages.append(Message(role="system", content=self.system_prompt))
 
         # Prior conversation history (last 6 turns to keep context window small)
         for turn in self._history[-6:]:
@@ -416,56 +391,7 @@ class QWRAgent:
 
         return messages
 
-    async def _get_context_from_db(self, query: str) -> str:
-        """Fetch matching context from Vector DB, falling back to scraper if not fully indexed."""
-        import asyncio
-        from ai_agent.tools.vector_db import SQLiteVectorDB
-        import google.generativeai as genai
 
-        db = SQLiteVectorDB()
-        status = db.get_business_status(self.domain)
-
-        # Fallback to scraper if indexing is not completed yet
-        if status != "completed":
-            logger.info("Vector DB indexing status for domain=%s is %s, falling back to real-time scraper", self.domain, status)
-            return await self._scraper.get_context(query)
-
-        search_query = query.strip()
-        if not search_query:
-            if self._history:
-                # Use last 2 turns of text history to maintain context
-                search_query = " ".join([t.text for t in self._history[-2:]])
-            else:
-                search_query = "overview home contact info"
-
-        try:
-            loop = asyncio.get_running_loop()
-            def _embed():
-                return genai.embed_content(
-                    model="models/gemini-embedding-001",
-                    content=search_query,
-                    task_type="retrieval_query"
-                )
-            
-            resp = await loop.run_in_executor(None, _embed)
-            query_emb = resp.get("embedding", [])
-            
-            if not query_emb:
-                logger.warning("Empty embedding returned for query=%r, falling back to first chunks", search_query)
-                fallback_chunks = db.get_first_chunks(self.domain, count=3)
-                return "\n\n".join(fallback_chunks)
-
-            matches = db.search(self.domain, query_emb, top_k=3)
-            if not matches:
-                logger.warning("No vector matches found for query=%r, falling back to first chunks", search_query)
-                fallback_chunks = db.get_first_chunks(self.domain, count=3)
-                return "\n\n".join(fallback_chunks)
-
-            return "\n\n".join([f"Source: {m['url']}\nContent: {m['text']}" for m in matches])
-
-        except Exception as exc:
-            logger.error("Vector search failed for domain=%s query=%r: %s", self.domain, search_query, exc)
-            return await self._scraper.get_context(query)
 
     async def generate_summary(self, turns: list[dict[str, Any]]) -> str:
         """Generate a concise summary of the conversation turns using the configured LLM."""
