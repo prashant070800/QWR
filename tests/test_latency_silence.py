@@ -48,3 +48,31 @@ class LatencySilenceTests(IsolatedAsyncioTestCase):
             self.assertLess(duration, 0.18)
             self.assertIn("Source: https://questionwhatsreal.com/", context)
             self.assertIn("Source: https://questionwhatsreal.com/about", context)
+
+    @patch("ai_agent.providers.factory.get_llm_provider")
+    async def test_agent_chat_stream_success(self, mock_get_provider):
+        mock_llm = AsyncMock()
+        
+        async def mock_chat_stream(messages, max_tokens=512):
+            yield "Hello, "
+            yield "how can "
+            yield "I help?"
+            
+        mock_llm.chat_stream = mock_chat_stream
+        mock_llm.provider_name = "gemini"
+        mock_llm.model_name = "gemini-3.5-flash"
+        mock_get_provider.return_value = mock_llm
+
+        agent = QWRAgent(
+            call_sid="test-sid",
+            stream_sid="test-stream-sid",
+            call_id="test-id",
+            llm=mock_llm,
+        )
+        agent.general_context = "Mock general context"
+
+        chunks = []
+        async for chunk in agent.chat_stream(user_text="Hello"):
+            chunks.append(chunk)
+            
+        self.assertEqual("".join(chunks), "Hello, how can I help?")

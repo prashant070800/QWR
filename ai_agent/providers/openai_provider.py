@@ -7,6 +7,7 @@ Install: pip install openai
 from __future__ import annotations
 
 import logging
+from typing import AsyncIterator
 
 from .base import LLMProvider, Message
 
@@ -59,6 +60,41 @@ class OpenAIProvider(LLMProvider):
             reply[:80],
         )
         return reply
+
+    async def chat_stream(
+        self,
+        messages: list[Message],
+        max_tokens: int = 512,
+    ) -> AsyncIterator[str]:
+        try:
+            from openai import AsyncOpenAI  # type: ignore[import-untyped]
+        except ImportError as exc:
+            raise ImportError(
+                "openai is not installed. Run: pip install openai"
+            ) from exc
+
+        client = AsyncOpenAI(api_key=self._api_key)
+        openai_messages = [msg.to_dict() for msg in messages]
+
+        logger.debug(
+            "OpenAI chat_stream model=%s turns=%d max_tokens=%d",
+            self._model,
+            len(openai_messages),
+            max_tokens,
+        )
+
+        response_stream = await client.chat.completions.create(
+            model=self._model,
+            messages=openai_messages,  # type: ignore[arg-type]
+            max_tokens=max_tokens,
+            temperature=0.7,
+            stream=True,
+        )
+
+        async for chunk in response_stream:
+            content = chunk.choices[0].delta.content or ""
+            if content:
+                yield content
 
     @property
     def provider_name(self) -> str:

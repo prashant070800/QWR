@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from typing import AsyncIterator, Any
 
 from ai_agent.config import settings
 from ai_agent.providers.base import LLMProvider, Message
@@ -229,16 +230,12 @@ class QWRAgent:
             base_prompt = f"Your name is {self.agent_name}. Speak as {self.agent_name}.\n{base_prompt}"
         
         self.system_prompt = base_prompt + (
-            "\n\nIMPORTANT: For every turn of the conversation, you will receive "
-            "either a text prompt or audio data representing the user speaking. "
-            "You MUST first transcribe exactly what the user said (if it is audio), "
-            "or repeat their input (if it is text). Then, you MUST write your "
-            "conversational reply. You MUST format your entire response exactly "
-            "like this:\n"
-            "User transcript: <what the user said>\n"
-            "Agent reply: <your response to the user>\n"
-            "Do not include any other markdown or text outside this format."
+            "\n\nIMPORTANT: Keep your responses extremely short, direct, and conversational "
+            "(maximum 10-15 words or 1-2 sentences). Do not include any introductory preambles or fluff. "
+            "If the user asks for details, specs, contact info, or facts not present in your context, reply with "
+            "exactly: [SEARCH: <query>]"
         )
+        self.general_context = None
 
         logger.info(
             "%s QWRAgent initialised provider=%s model=%s agent_name=%s welcome_msg=%s",
@@ -261,55 +258,147 @@ class QWRAgent:
     ) -> tuple[str, str]:
         """Process a user utterance and return the agent's reply.
 
-        Steps:
-        1. Fetch relevant QWR website context for this query.
-        2. Build message list (system prompt + history + context + user turn).
-        3. Send to configured LLM.
-        4. Record turn in history with latency.
-        5. Return (user_transcript, agent_reply) tuple.
+        This synchronous wrapper uses chat_stream under the hood.
         """
         t0 = time.monotonic()
 
-        # Step 1: fetch context from vector DB
-        qwr_context = await self._get_context_from_db(user_text or "")
+        # Step 1: transcribe audio if present using configured STT
+        if audio_bytes and not user_text:
+            from ai_agent.stt import transcribe_audio
+            user_text = await transcribe_audio(
+                audio_bytes,
+                sample_rate=sample_rate,
+                call_sid=self.call_sid,
+                stream_sid=self.stream_sid,
+            )
 
-        # Step 2: convert audio if present
-        wav_bytes = None
-        if audio_bytes:
-            wav_bytes = pcm_to_wav(audio_bytes, sample_rate)
-
-        # Step 3: build messages
-        audio_mime = "audio/wav" if wav_bytes else None
-        messages = self._build_messages(
-            user_text,
-            qwr_context,
-            audio_data=wav_bytes,
-            audio_mime=audio_mime,
-        )
-
-        # Step 4: call LLM
-        raw_reply = await self._llm.chat(messages, max_tokens=settings.ai_max_tokens)
-
-        # Step 5: parse structured response
-        user_transcript, agent_reply = parse_gemini_response(raw_reply)
-
-        # If user_text was passed directly (like DTMF), override user_transcript
-        if user_text and not audio_bytes:
-            user_transcript = user_text
+        user_transcript = user_text or ""
 
         # Return empty reply early if user transcript is silence/empty to avoid repeating greetings
         if user_transcript.strip().lower() in ("", "[silence]", "silence"):
             return user_transcript, ""
 
+        # Step 2: Fetch general context once
+        if self.general_context is None:
+            self.general_context = await self._get_general_context()
+
+        # Step 3: Stream tokens into a complete string
+        chunks = []
+        async for chunk in self.chat_stream(user_text=user_transcript):
+            chunks.append(chunk)
+        
+        raw_reply = "".join(chunks)
+
+        # Step 4: Handle search intercept inside the sync wrapper if triggered
+        if "[SEARCH:" in raw_reply:
+            match = re.search(r"\[SEARCH:\s*(.*?)\]", raw_reply)
+            if match:
+                query = match.group(1).strip()
+                search_res = await self._run_search(query)
+                chunks = []
+                async for chunk in self.chat_stream(user_text=user_transcript, search_context=search_res):
+                    chunks.append(chunk)
+                raw_reply = "".join(chunks)
+
+        agent_reply = raw_reply.strip()
         latency_ms = (time.monotonic() - t0) * 1000
 
-        # Step 6: record turns
-        self._history.append(ConversationTurn(speaker="user", text=user_transcript))
+        # Step 5: record turns
+        self.record_turn(user_transcript, agent_reply, latency_ms)
+
+        return user_transcript, agent_reply
+
+    async def chat_stream(
+        self,
+        user_text: str | None = None,
+        search_context: str | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream reply chunks for user input, appending general and search context.
+
+        Yields:
+            str: Chunks of the agent's reply as they arrive from the LLM.
+        """
+        # Lazy load general context on first turn
+        if self.general_context is None:
+            self.general_context = await self._get_general_context()
+
+        # Build messages using both cached general context and any dynamic search context
+        messages = self._build_messages(
+            user_text=user_text,
+            general_context=self.general_context,
+            search_context=search_context,
+        )
+
+        reply_stream = self._llm.chat_stream(messages, max_tokens=settings.ai_max_tokens)
+        async for chunk in reply_stream:
+            yield chunk
+
+    async def _get_general_context(self) -> str:
+        """Fetch general business context (homepage contents) once to embed in system prompt."""
+        try:
+            from ai_agent.tools.vector_db import SQLiteVectorDB
+            db = SQLiteVectorDB()
+            # Fast check if business status is completed
+            status = db.get_business_status(self.domain)
+            if status == "completed":
+                chunks = db.get_first_chunks(self.domain, count=4)
+                if chunks:
+                    logger.info("%s Loaded general business context from SQLite Vector DB", self._log_prefix)
+                    return "\n\n".join(chunks)
+
+            # Fallback to loading home page from scraper cache/live
+            logger.info("%s Vector DB not completed. Loading general context from scraper.", self._log_prefix)
+            return await self._scraper.get_context("overview home contact info")
+        except Exception as exc:
+            logger.error("%s Failed to fetch general context: %s", self._log_prefix, exc)
+            return ""
+
+    async def _run_search(self, query: str) -> str:
+        """Query vector database for dynamic search context."""
+        import asyncio
+        from ai_agent.tools.vector_db import SQLiteVectorDB
+        import google.generativeai as genai
+
+        logger.info("%s Intercepted SEARCH trigger. Searching vector DB for: %r", self._log_prefix, query)
+        db = SQLiteVectorDB()
+        search_query = query.strip()
+        if not search_query:
+            return ""
+
+        try:
+            loop = asyncio.get_running_loop()
+            def _embed():
+                return genai.embed_content(
+                    model="models/gemini-embedding-001",
+                    content=search_query,
+                    task_type="retrieval_query"
+                )
+            
+            resp = await loop.run_in_executor(None, _embed)
+            query_emb = resp.get("embedding", [])
+            
+            if not query_emb:
+                logger.warning("Empty embedding returned for query=%r during SEARCH fallback", search_query)
+                fallback_chunks = db.get_first_chunks(self.domain, count=3)
+                return "\n\n".join(fallback_chunks)
+
+            matches = db.search(self.domain, query_emb, top_k=3)
+            if not matches:
+                logger.warning("No vector matches found for query=%r during SEARCH fallback", search_query)
+                fallback_chunks = db.get_first_chunks(self.domain, count=3)
+                return "\n\n".join(fallback_chunks)
+
+            return "\n\n".join([f"Source: {m['url']}\nContent: {m['text']}" for m in matches])
+        except Exception as exc:
+            logger.error("%s Search failed for query=%r: %s", self._log_prefix, search_query, exc)
+            return await self._scraper.get_context(search_query)
+
+    def record_turn(self, user_text: str, agent_reply: str, latency_ms: float) -> None:
+        """Record completed conversation turns in history."""
+        self._history.append(ConversationTurn(speaker="user", text=user_text))
         self._history.append(
             ConversationTurn(speaker="assistant", text=agent_reply, latency_ms=latency_ms)
         )
-
-        return user_transcript, agent_reply
 
     async def get_greeting(self) -> str:
         """Generate the opening greeting for a new call.
@@ -379,7 +468,9 @@ class QWRAgent:
     def _build_messages(
         self,
         user_text: str | None,
-        qwr_context: str,
+        qwr_context: str | None = None,
+        general_context: str | None = None,
+        search_context: str | None = None,
         audio_data: bytes | None = None,
         audio_mime: str | None = None,
     ) -> list[Message]:
@@ -394,6 +485,17 @@ class QWRAgent:
                 "Use the following live content from the business website "
                 "to answer accurately:\n\n"
                 + qwr_context
+            )
+        if general_context:
+            system_content += (
+                f"\n\n--- GENERAL BUSINESS CONTEXT ---\n"
+                + general_context
+            )
+        if search_context:
+            system_content += (
+                f"\n\n--- ADDITIONAL LIVE WEBSITE SEARCH CONTEXT ---\n"
+                "Use this newly fetched information to answer the question:\n"
+                + search_context
             )
 
         messages.append(Message(role="system", content=system_content))

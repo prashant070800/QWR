@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -381,8 +382,11 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             else:
                 self.state.silent_chunk_count = 0
                 self.state.speech_chunk_count += 1
-                self.state.has_speech_in_buffer = True
-                self._cancel_playback_for_barge_in()
+                # Noise Filter: only consider it real speech if it lasts at least MIN_SPEECH_CHUNKS (e.g. 6 chunks / 120ms)
+                MIN_SPEECH_CHUNKS = 6
+                if self.state.speech_chunk_count >= MIN_SPEECH_CHUNKS:
+                    self.state.has_speech_in_buffer = True
+                    self._cancel_playback_for_barge_in()
 
             # if self.state.inbound_chunks % 50 == 0:
             #     logger.info(
@@ -548,7 +552,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         *,
         text_override: str | None = None,
     ) -> None:
-        """Full pipeline: PCM (or text) → LLM → TTS → Exotel stream."""
+        """Full pipeline: PCM (or text) -> STT -> LLM Streaming -> TTS -> Playback queue."""
         try:
             sample_rate = self.get_sample_rate()
             call_sid    = self.state.call_sid or ""
@@ -559,26 +563,22 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 return
 
             t_start = time.monotonic()
-            try:
-                if text_override:
-                    transcript, reply = await self.agent.chat(user_text=text_override)
-                else:
-                    transcript, reply = await self.agent.chat(audio_bytes=pcm_bytes, sample_rate=sample_rate)
-            except Exception as exc:
-                logger.exception(
-                    "%s Agent failed to generate reply: %s",
-                    self.state.log_prefix,
-                    exc,
+            
+            # Step 1: STT
+            if text_override:
+                transcript = text_override
+            else:
+                from ai_agent.stt import transcribe_audio
+                transcript = await transcribe_audio(
+                    pcm_bytes,
+                    sample_rate=sample_rate,
+                    call_sid=call_sid,
+                    stream_sid=stream_sid,
                 )
-                reply = _provider_error_reply(exc)
-                transcript = text_override or "Audio input"
-                self.agent._history.append(ConversationTurn(speaker="user", text=transcript))
-                self.agent._history.append(ConversationTurn(speaker="assistant", text=reply))
 
-            latency_ms = (time.monotonic() - t_start) * 1000
-
-            # If user was silent, we skip saving, generating audio, and streaming
-            if not reply:
+            # If user was silent, skip everything
+            clean_tx = transcript.strip().lower()
+            if not clean_tx or clean_tx in ("", "[silence]", "silence", "[noise]"):
                 logger.info(
                     "%s User was silent (transcript=%r). Skipping response and playback.",
                     self.state.log_prefix,
@@ -586,10 +586,156 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 )
                 return
 
-            self.state.caller_transcripts.append(transcript)
-            self.state.agent_replies.append(reply)
+            if self.state.is_stopped:
+                return
+
+            # Step 2: Streaming LLM & Sentence-level TTS
+            playback_queue = asyncio.Queue()
+
+            async def _playback_worker():
+                try:
+                    while True:
+                        pcm_chunk = await playback_queue.get()
+                        if pcm_chunk is None:
+                            playback_queue.task_done()
+                            break
+                        await self._stream_pcm_to_exotel(pcm_chunk)
+                        playback_queue.task_done()
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    logger.exception("%s Playback worker error: %s", self.state.log_prefix, exc)
+
+            self.playback_task = asyncio.create_task(_playback_worker())
+
+            sentence_endings = re.compile(r'(?<=[.!?\n])\s+')
+            buffer = ""
+            full_reply_accumulated = []
+            ttfb_ms = None
+
+            try:
+                # Start LLM stream
+                stream = self.agent.chat_stream(user_text=transcript)
+                search_triggered = False
+                search_query = ""
+
+                async for chunk in stream:
+                    if self.state.is_stopped:
+                        break
+                    buffer += chunk
+
+                    if "[SEARCH:" in buffer:
+                        if "]" in buffer:
+                            match = re.search(r"\[SEARCH:\s*(.*?)\]", buffer)
+                            if match:
+                                search_query = match.group(1).strip()
+                                search_triggered = True
+                                break
+                        continue
+
+                    parts = sentence_endings.split(buffer)
+                    if len(parts) > 1:
+                        sentences = parts[:-1]
+                        buffer = parts[-1]
+                        for sentence in sentences:
+                            clean_sentence = sentence.strip()
+                            if clean_sentence:
+                                full_reply_accumulated.append(clean_sentence)
+                                pcm = await synthesize_speech(
+                                    clean_sentence,
+                                    sample_rate=sample_rate,
+                                    call_sid=call_sid,
+                                    stream_sid=stream_sid,
+                                    speaking_rate=self.voice_speed,
+                                )
+                                if ttfb_ms is None:
+                                    ttfb_ms = (time.monotonic() - t_start) * 1000
+                                    logger.info("%s Time to First Audio Chunk (TTFB): %.2fms", self.state.log_prefix, ttfb_ms)
+                                await playback_queue.put(pcm)
+
+                # Handle search if triggered
+                if search_triggered and not self.state.is_stopped:
+                    logger.info("%s Intercepted SEARCH trigger. Playing filler sound.", self.state.log_prefix)
+                    filler_pcm = await synthesize_speech(
+                        "Let me look that up for you.",
+                        sample_rate=sample_rate,
+                        call_sid=call_sid,
+                        stream_sid=stream_sid,
+                        speaking_rate=self.voice_speed,
+                    )
+                    if ttfb_ms is None:
+                        ttfb_ms = (time.monotonic() - t_start) * 1000
+                        logger.info("%s Time to First Audio Chunk (TTFB - Filler): %.2fms", self.state.log_prefix, ttfb_ms)
+                    await playback_queue.put(filler_pcm)
+
+                    # Search vector DB
+                    search_results = await self.agent._run_search(search_query)
+
+                    # Re-query LLM stream
+                    stream = self.agent.chat_stream(user_text=transcript, search_context=search_results)
+                    buffer = ""
+                    async for chunk in stream:
+                        if self.state.is_stopped:
+                            break
+                        buffer += chunk
+                        parts = sentence_endings.split(buffer)
+                        if len(parts) > 1:
+                            sentences = parts[:-1]
+                            buffer = parts[-1]
+                            for sentence in sentences:
+                                clean_sentence = sentence.strip()
+                                if clean_sentence:
+                                    full_reply_accumulated.append(clean_sentence)
+                                    pcm = await synthesize_speech(
+                                        clean_sentence,
+                                        sample_rate=sample_rate,
+                                        call_sid=call_sid,
+                                        stream_sid=stream_sid,
+                                        speaking_rate=self.voice_speed,
+                                    )
+                                    await playback_queue.put(pcm)
+
+                # Process final remaining buffer
+                remaining = buffer.strip()
+                if remaining and not search_triggered and not self.state.is_stopped:
+                    full_reply_accumulated.append(remaining)
+                    pcm = await synthesize_speech(
+                        remaining,
+                        sample_rate=sample_rate,
+                        call_sid=call_sid,
+                        stream_sid=stream_sid,
+                        speaking_rate=self.voice_speed,
+                    )
+                    if ttfb_ms is None:
+                        ttfb_ms = (time.monotonic() - t_start) * 1000
+                        logger.info("%s Time to First Audio Chunk (TTFB): %.2fms", self.state.log_prefix, ttfb_ms)
+                    await playback_queue.put(pcm)
+
+            except Exception as exc:
+                logger.exception("%s LLM or TTS streaming error: %s", self.state.log_prefix, exc)
+                reply = _provider_error_reply(exc)
+                full_reply_accumulated = [reply]
+                pcm = await synthesize_speech(
+                    reply,
+                    sample_rate=sample_rate,
+                    call_sid=call_sid,
+                    stream_sid=stream_sid,
+                    speaking_rate=self.voice_speed,
+                )
+                await playback_queue.put(pcm)
+
+            # Signal end of playback
+            await playback_queue.put(None)
+
+            reply = " ".join(full_reply_accumulated).strip()
+            latency_ms = (time.monotonic() - t_start) * 1000
+
+            # Record turn in agent history
+            self.agent.record_turn(transcript, reply, latency_ms)
 
             # Save turns to database storage
+            self.state.caller_transcripts.append(transcript)
+            self.state.agent_replies.append(reply)
             if call_sid:
                 try:
                     await self.storage.insert_transcript_turn(
@@ -608,32 +754,18 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 except Exception as exc:
                     logger.error("%s Failed to save turns to storage: %s", self.state.log_prefix, exc)
 
-            # Logger when user says something and what AI responds along with latency
             logger.info(
-                "%s USER: %s | AI: %s | Latency: %.2fms",
+                "%s USER: %s | AI: %s | Latency: %.2fms | TTFB: %s",
                 self.state.log_prefix,
                 transcript,
                 reply,
                 latency_ms,
+                f"{ttfb_ms:.2f}ms" if ttfb_ms is not None else "N/A",
             )
 
-            if self.state.is_stopped:
-                return
-
-            # Step 3: TTS
-            pcm = await synthesize_speech(
-                reply,
-                sample_rate=sample_rate,
-                call_sid=call_sid,
-                stream_sid=stream_sid,
-                speaking_rate=self.voice_speed,
-            )
-
-            if self.state.is_stopped:
-                return
-
-            # Step 4: stream audio
-            await self._stream_pcm_to_exotel(pcm, mark_name="qwr-reply-complete")
+            # Wait for playback to complete fully
+            if self.playback_task:
+                await self.playback_task
 
         except asyncio.CancelledError:
             raise
@@ -645,6 +777,9 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             )
         finally:
             self.state.is_processing_stt = False
+            # Cancel playback task if still running to avoid leaks
+            if self.playback_task and not self.playback_task.done():
+                self.playback_task.cancel()
 
     async def _stream_pcm_to_exotel(
         self,

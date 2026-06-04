@@ -7,6 +7,7 @@ Install: pip install anthropic
 from __future__ import annotations
 
 import logging
+from typing import AsyncIterator
 
 from .base import LLMProvider, Message
 
@@ -71,6 +72,50 @@ class AnthropicProvider(LLMProvider):
             reply[:80],
         )
         return reply
+
+    async def chat_stream(
+        self,
+        messages: list[Message],
+        max_tokens: int = 512,
+    ) -> AsyncIterator[str]:
+        try:
+            import anthropic  # type: ignore[import-untyped]
+        except ImportError as exc:
+            raise ImportError(
+                "anthropic is not installed. Run: pip install anthropic"
+            ) from exc
+
+        client = anthropic.AsyncAnthropic(api_key=self._api_key)
+
+        system_parts: list[str] = []
+        anthropic_messages: list[dict] = []
+
+        for msg in messages:
+            if msg.role == "system":
+                system_parts.append(msg.content)
+            else:
+                anthropic_messages.append(msg.to_dict())
+
+        system_text = "\n\n".join(system_parts)
+
+        logger.debug(
+            "Anthropic chat_stream model=%s turns=%d max_tokens=%d",
+            self._model,
+            len(anthropic_messages),
+            max_tokens,
+        )
+
+        kwargs: dict = {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "messages": anthropic_messages,
+        }
+        if system_text:
+            kwargs["system"] = system_text
+
+        async with client.messages.stream(**kwargs) as stream:
+            async for text in stream.text_stream:
+                yield text
 
     @property
     def provider_name(self) -> str:

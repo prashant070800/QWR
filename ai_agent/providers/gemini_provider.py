@@ -7,6 +7,7 @@ Install: pip install google-generativeai
 from __future__ import annotations
 
 import logging
+from typing import AsyncIterator
 
 from .base import LLMProvider, Message
 
@@ -130,6 +131,103 @@ class GeminiProvider(LLMProvider):
             reply[:80],
         )
         return reply
+
+    async def chat_stream(
+        self,
+        messages: list[Message],
+        max_tokens: int = 512,
+    ) -> AsyncIterator[str]:
+        """Send conversation to Gemini and yield chunks as they arrive."""
+        import asyncio
+        import threading
+
+        # Separate system prompt from conversation turns
+        system_parts: list[str] = []
+        chat_turns: list[dict] = []
+
+        for msg in messages:
+            if msg.role == "system":
+                system_parts.append(msg.content)
+            elif msg.role == "user":
+                parts = []
+                if msg.content:
+                    parts.append(msg.content)
+                if msg.audio_data and msg.audio_mime:
+                    parts.append({"mime_type": msg.audio_mime, "data": msg.audio_data})
+                chat_turns.append({"role": "user", "parts": parts})
+            elif msg.role == "assistant":
+                chat_turns.append({"role": "model", "parts": [msg.content]})
+
+        system_instruction = "\n\n".join(system_parts) if system_parts else None
+
+        logger.debug(
+            "Gemini chat_stream model=%s turns=%d max_tokens=%d",
+            self._model,
+            len(chat_turns),
+            max_tokens,
+        )
+
+        model_names = _candidate_model_names(self._model)
+        queue: asyncio.Queue[str | Exception | None] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def _sync_stream_worker() -> None:
+            import google.generativeai as genai  # type: ignore[import-untyped]
+
+            model_kwargs: dict = {
+                "generation_config": genai.types.GenerationConfig(
+                    max_output_tokens=max_tokens,
+                    temperature=0.7,
+                ),
+            }
+            if system_instruction:
+                model_kwargs["system_instruction"] = system_instruction
+
+            last_error: Exception | None = None
+            for model_name in model_names:
+                try:
+                    model = genai.GenerativeModel(model_name, **model_kwargs)
+
+                    if chat_turns:
+                        history = chat_turns[:-1]
+                        chat = model.start_chat(history=history)
+                        last_user_parts = chat_turns[-1]["parts"]
+                        response = chat.send_message(last_user_parts, stream=True)
+                    else:
+                        response = model.generate_content("", stream=True)
+
+                    for chunk in response:
+                        loop.call_soon_threadsafe(queue.put_nowait, chunk.text)
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+                    return
+                except Exception as exc:
+                    if not _is_unavailable_model_error(exc):
+                        loop.call_soon_threadsafe(queue.put_nowait, exc)
+                        return
+                    last_error = exc
+                    logger.warning(
+                        "Gemini model unavailable in stream model=%s error=%s",
+                        model_name,
+                        exc,
+                    )
+
+            if last_error is not None:
+                loop.call_soon_threadsafe(queue.put_nowait, last_error)
+            else:
+                loop.call_soon_threadsafe(
+                    queue.put_nowait, RuntimeError("No Gemini model candidates configured")
+                )
+
+        thread = threading.Thread(target=_sync_stream_worker, daemon=True)
+        thread.start()
+
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
 
     @property
     def provider_name(self) -> str:
