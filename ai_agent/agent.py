@@ -219,7 +219,7 @@ class QWRAgent:
         self._log_prefix = f"call_id={self.call_id} call_sid={self.call_sid} stream_sid={self.stream_sid}"
 
         self.agent_name = agent_name or settings.ai_agent_name
-        self.welcome_message = welcome_message or settings.ai_welcome_message
+        self.welcome_message = welcome_message
 
         # Determine the base system prompt
         base_prompt = system_prompt or settings.ai_system_prompt or QWR_SYSTEM_PROMPT

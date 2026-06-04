@@ -152,9 +152,6 @@ class AgentSettings:
     )
 
     # ── AI Agent dynamic settings ──
-    ai_welcome_message: str = field(
-        default_factory=lambda: _env("AI_WELCOME_MESSAGE", "Welcome to QWR, how can I help you?")
-    )
     ai_agent_name: str = field(
         default_factory=lambda: _env("AI_AGENT_NAME", "QWR Assistant")
     )
