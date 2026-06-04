@@ -106,9 +106,22 @@ class GeminiProvider(LLMProvider):
                     else:
                         response = model.generate_content("")
 
-                    return response.text.strip(), model_name
+                    text = ""
+                    try:
+                        text = response.text.strip()
+                    except ValueError:
+                        if response.candidates:
+                            candidate = response.candidates[0]
+                            if candidate.content and candidate.content.parts:
+                                text = "".join(part.text for part in candidate.content.parts if part.text).strip()
+                    if not text:
+                        reason = "unknown"
+                        if response.candidates:
+                            reason = str(response.candidates[0].finish_reason)
+                        raise ValueError(f"Gemini returned empty response or blocked. Finish reason: {reason}")
+                    return text, model_name
                 except Exception as exc:
-                    if not _is_unavailable_model_error(exc):
+                    if not _is_unavailable_model_error(exc) and not isinstance(exc, ValueError):
                         raise
                     last_error = exc
                     logger.warning(
@@ -197,7 +210,16 @@ class GeminiProvider(LLMProvider):
                         response = model.generate_content("", stream=True)
 
                     for chunk in response:
-                        loop.call_soon_threadsafe(queue.put_nowait, chunk.text)
+                        chunk_text = ""
+                        try:
+                            chunk_text = chunk.text
+                        except ValueError:
+                            if chunk.candidates:
+                                candidate = chunk.candidates[0]
+                                if candidate.content and candidate.content.parts:
+                                    chunk_text = "".join(part.text for part in candidate.content.parts if part.text)
+                        if chunk_text:
+                            loop.call_soon_threadsafe(queue.put_nowait, chunk_text)
                     loop.call_soon_threadsafe(queue.put_nowait, None)
                     return
                 except Exception as exc:
@@ -221,13 +243,30 @@ class GeminiProvider(LLMProvider):
         thread = threading.Thread(target=_sync_stream_worker, daemon=True)
         thread.start()
 
-        while True:
-            item = await queue.get()
-            if item is None:
-                break
-            if isinstance(item, Exception):
-                raise item
-            yield item
+        has_yielded = False
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                has_yielded = True
+                yield item
+        except Exception as exc:
+            if not has_yielded:
+                logger.warning(
+                    "Gemini streaming failed: %s. Falling back to non-streaming chat.",
+                    exc,
+                )
+                try:
+                    reply = await self.chat(messages, max_tokens=max_tokens)
+                    yield reply
+                except Exception as chat_exc:
+                    logger.error("Gemini non-streaming chat fallback also failed: %s", chat_exc)
+                    raise chat_exc
+            else:
+                raise exc
 
     @property
     def provider_name(self) -> str:

@@ -425,8 +425,15 @@ class QWRAgent:
                 ),
             ),
         ]
-        greeting = await self._llm.chat(messages, max_tokens=64)
-        user_tx, agent_reply = parse_gemini_response(greeting)
+        try:
+            greeting = await self._llm.chat(messages, max_tokens=64)
+            user_tx, agent_reply = parse_gemini_response(greeting)
+            if not agent_reply:
+                agent_reply = greeting
+        except Exception as exc:
+            logger.warning("%s Failed to generate LLM greeting, using default fallback: %s", self._log_prefix, exc)
+            agent_reply = "Hello, thank you for calling QWR. How can I help you today?"
+
         latency_ms = (time.monotonic() - t0) * 1000
         logger.info(
             "%s AI greeting provider=%s model=%s latency_ms=%.0f preview=%r",

@@ -49,9 +49,8 @@ async def transcribe_audio(
     log_prefix = f"call_sid={call_sid} stream_sid={stream_sid}"
     provider = settings.stt_provider.lower()
 
-    logger.info(
-        "%s STT request provider=%s pcm_bytes=%d sample_rate=%d",
-        log_prefix,
+    logger.debug(
+        "STT request provider=%s pcm_bytes=%d sample_rate=%d",
         provider,
         len(pcm_bytes),
         sample_rate,
@@ -71,15 +70,21 @@ async def transcribe_audio(
 
 
 # ---------------------------------------------------------------------------
-# Stub (development / testing)
-# ---------------------------------------------------------------------------
+_STUB_COUNTER = 0
 
 async def _stub_transcribe(pcm_bytes: bytes, log_prefix: str) -> str:
-    """Return a fixed transcript — useful for testing without API keys."""
-    stub_text = "What products does QWR make?"
-    logger.info(
-        "%s STT stub returning canned transcript=%r pcm_bytes=%d",
-        log_prefix,
+    """Return a rotating canned transcript to allow testing different intents without API keys."""
+    global _STUB_COUNTER
+    canned_questions = [
+        "What products does QWR make?",
+        "What is your office location?",
+        "Who is the founder of QWR?",
+        "Can you connect me with the sales team?"
+    ]
+    stub_text = canned_questions[_STUB_COUNTER % len(canned_questions)]
+    _STUB_COUNTER += 1
+    logger.debug(
+        "STT stub returning canned transcript=%r pcm_bytes=%d",
         stub_text,
         len(pcm_bytes),
     )
@@ -166,15 +171,14 @@ async def _google_transcribe(
     data = resp.json()
     results = data.get("results", [])
     if not results:
-        logger.info("%s Google STT returned no results (silence or noise)", log_prefix)
+        logger.debug("Google STT returned no results (silence or noise)")
         return ""
 
     transcript = results[0]["alternatives"][0]["transcript"].strip()
     confidence = results[0]["alternatives"][0].get("confidence", 0)
 
-    logger.info(
-        "%s Google STT transcript=%r confidence=%.2f",
-        log_prefix,
+    logger.debug(
+        "Google STT transcript=%r confidence=%.2f",
         transcript,
         confidence,
     )
@@ -238,12 +242,11 @@ async def _deepgram_transcribe(
         )
         confidence = data["results"]["channels"][0]["alternatives"][0].get("confidence", 0)
     except (KeyError, IndexError):
-        logger.info("%s Deepgram returned no transcript (silence?)", log_prefix)
+        logger.debug("Deepgram returned no transcript (silence?)")
         return ""
 
-    logger.info(
-        "%s Deepgram STT transcript=%r confidence=%.2f",
-        log_prefix,
+    logger.debug(
+        "Deepgram STT transcript=%r confidence=%.2f",
         transcript,
         confidence,
     )

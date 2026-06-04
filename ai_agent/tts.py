@@ -59,9 +59,8 @@ async def synthesize_speech(
     if speaking_rate is None:
         speaking_rate = settings.tts_speaking_rate
 
-    logger.info(
-        "%s TTS request provider=%s text_len=%d rate=%.2f preview=%r",
-        log_prefix,
+    logger.debug(
+        "TTS request provider=%s text_len=%d rate=%.2f preview=%r",
         provider,
         len(text),
         speaking_rate,
@@ -119,8 +118,7 @@ async def _gtts_synthesize(text: str, sample_rate: int, log_prefix: str, speakin
         mp3_bytes = mp3_buf.read()
 
         logger.debug(
-            "%s gTTS MP3 size=%d bytes",
-            log_prefix,
+            "gTTS MP3 size=%d bytes",
             len(mp3_bytes),
         )
 
@@ -134,9 +132,8 @@ async def _gtts_synthesize(text: str, sample_rate: int, log_prefix: str, speakin
                 audio = speedup(audio, playback_speed=speaking_rate)
             audio = audio.set_channels(1).set_frame_rate(sample_rate).set_sample_width(2)
             pcm = audio.raw_data
-            logger.info(
-                "%s gTTS synthesized via pydub pcm_bytes=%d",
-                log_prefix,
+            logger.debug(
+                "gTTS synthesized via pydub pcm_bytes=%d",
                 len(pcm),
             )
             return pcm
@@ -303,9 +300,8 @@ async def _google_synthesize(
     # Strip 44-byte WAV header to get raw PCM
     pcm = audio_bytes[44:] if audio_bytes[:4] == b"RIFF" else audio_bytes
 
-    logger.info(
-        "%s Google TTS synthesized pcm_bytes=%d voice=%s",
-        log_prefix,
+    logger.debug(
+        "Google TTS synthesized pcm_bytes=%d voice=%s",
         len(pcm),
         settings.tts_voice_name,
     )

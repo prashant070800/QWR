@@ -442,11 +442,11 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
 
     async def on_mark(self, content: dict[str, Any]) -> None:
         mark_name = (content.get("mark") or {}).get("name", "")
-        logger.info("%s 🏷  Mark received: %s", self.state.log_prefix, mark_name)
+        logger.debug("Mark received: %s", mark_name)
 
     async def on_clear(self, content: dict[str, Any]) -> None:
         self._cancel_playback("Exotel clear")
-        logger.info("%s 🛑 Exotel clear — stopped local playback", self.state.log_prefix)
+        logger.debug("Exotel clear — stopped local playback")
 
     async def on_stop(self, content: dict[str, Any]) -> None:
         logger.info(
@@ -513,11 +513,11 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                         call_id=self.state.call_id,
                     )
                 except Exception as exc:
-                    logger.error("%s Failed to save greeting turn to storage: %s", log_prefix, exc)
+                    logger.error("Failed to save greeting turn to storage: %s", exc)
 
         pcm: bytes = b""
         if not greeting:
-            logger.warning("%s No AI greeting text available; using tone fallback", log_prefix)
+            logger.warning("No AI greeting text available; using tone fallback")
         elif settings.tts_provider != "stub":
             try:
                 pcm = await synthesize_speech(
@@ -529,20 +529,18 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 )
             except Exception as exc:
                 logger.exception(
-                    "%s Greeting TTS error: %s — generating tone fallback",
-                    log_prefix,
+                    "Greeting TTS error: %s — generating tone fallback",
                     exc,
                 )
         else:
             logger.warning(
-                "%s TTS_PROVIDER=stub produces silence; using tone for audible greeting",
-                log_prefix,
+                "TTS_PROVIDER=stub produces silence; using tone for audible greeting"
             )
 
         # --- Last resort: synthetic tone ---
         if not pcm:
             pcm = generate_tone_pcm(duration_seconds=3.0, sample_rate=sample_rate)
-            logger.info("%s 🔔 Using synthetic tone as greeting fallback", log_prefix)
+            logger.info("Using synthetic tone as greeting fallback")
 
         await self._stream_pcm_to_exotel(pcm, mark_name="qwr-greeting-complete")
 
@@ -579,9 +577,8 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             # If user was silent, skip everything
             clean_tx = transcript.strip().lower()
             if not clean_tx or clean_tx in ("", "[silence]", "silence", "[noise]"):
-                logger.info(
-                    "%s User was silent (transcript=%r). Skipping response and playback.",
-                    self.state.log_prefix,
+                logger.debug(
+                    "User was silent (transcript=%r). Skipping response and playback.",
                     transcript,
                 )
                 return
@@ -604,7 +601,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                 except asyncio.CancelledError:
                     pass
                 except Exception as exc:
-                    logger.exception("%s Playback worker error: %s", self.state.log_prefix, exc)
+                    logger.exception("Playback worker error: %s", exc)
 
             self.playback_task = asyncio.create_task(_playback_worker())
 
@@ -650,12 +647,12 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                                 )
                                 if ttfb_ms is None:
                                     ttfb_ms = (time.monotonic() - t_start) * 1000
-                                    logger.info("%s Time to First Audio Chunk (TTFB): %.2fms", self.state.log_prefix, ttfb_ms)
+                                    logger.info("Time to First Audio Chunk (TTFB): %.2fms", ttfb_ms)
                                 await playback_queue.put(pcm)
 
                 # Handle search if triggered
                 if search_triggered and not self.state.is_stopped:
-                    logger.info("%s Intercepted SEARCH trigger. Playing filler sound.", self.state.log_prefix)
+                    logger.info("Intercepted SEARCH trigger. Playing filler sound.")
                     filler_pcm = await synthesize_speech(
                         "Let me look that up for you.",
                         sample_rate=sample_rate,
@@ -665,7 +662,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                     )
                     if ttfb_ms is None:
                         ttfb_ms = (time.monotonic() - t_start) * 1000
-                        logger.info("%s Time to First Audio Chunk (TTFB - Filler): %.2fms", self.state.log_prefix, ttfb_ms)
+                        logger.info("Time to First Audio Chunk (TTFB - Filler): %.2fms", ttfb_ms)
                     await playback_queue.put(filler_pcm)
 
                     # Search vector DB
@@ -708,11 +705,11 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                     )
                     if ttfb_ms is None:
                         ttfb_ms = (time.monotonic() - t_start) * 1000
-                        logger.info("%s Time to First Audio Chunk (TTFB): %.2fms", self.state.log_prefix, ttfb_ms)
+                        logger.info("Time to First Audio Chunk (TTFB): %.2fms", ttfb_ms)
                     await playback_queue.put(pcm)
 
             except Exception as exc:
-                logger.exception("%s LLM or TTS streaming error: %s", self.state.log_prefix, exc)
+                logger.exception("LLM or TTS streaming error: %s", exc)
                 reply = _provider_error_reply(exc)
                 full_reply_accumulated = [reply]
                 pcm = await synthesize_speech(
@@ -752,11 +749,10 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                         call_id=self.state.call_id,
                     )
                 except Exception as exc:
-                    logger.error("%s Failed to save turns to storage: %s", self.state.log_prefix, exc)
+                    logger.error("Failed to save turns to storage: %s", exc)
 
             logger.info(
-                "%s USER: %s | AI: %s | Latency: %.2fms | TTFB: %s",
-                self.state.log_prefix,
+                "USER: %s | AI: %s | Latency: %.2fms | TTFB: %s",
                 transcript,
                 reply,
                 latency_ms,
@@ -771,8 +767,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             raise
         except Exception as exc:
             logger.exception(
-                "%s ❌ Unhandled error in AI pipeline: %s",
-                self.state.log_prefix,
+                "❌ Unhandled error in AI pipeline: %s",
                 exc,
             )
         finally:
@@ -974,7 +969,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
         self.state.playback_cancel_requested = True
         if self.playback_task and not self.playback_task.done():
             self.playback_task.cancel()
-            logger.info("%s Playback cancelled: %s", self.state.log_prefix, reason)
+            logger.info("INTERRUPT: %s (playback cancelled)", reason)
         if (
             was_playing
             and self.ai_task
@@ -982,7 +977,7 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
             and self.ai_task is not asyncio.current_task()
         ):
             self.ai_task.cancel()
-            logger.info("%s AI playback task cancelled: %s", self.state.log_prefix, reason)
+            logger.info("INTERRUPT: %s (generation cancelled)", reason)
         if was_playing:
             asyncio.create_task(self._send_clear_to_exotel(reason))
         self.state.is_playing = False
@@ -997,11 +992,10 @@ class ExotelVoicebotConsumer(AsyncJsonWebsocketConsumer):
                     "stream_sid": self.state.stream_sid,
                 }
             )
-            logger.info("%s Sent Exotel clear: %s", self.state.log_prefix, reason)
+            logger.info("CLEAR SENT: %s", reason)
         except Exception:
             logger.exception(
-                "%s Failed to send Exotel clear for playback cancellation",
-                self.state.log_prefix,
+                "Failed to send Exotel clear for playback cancellation"
             )
 
     def _log_call_summary(self) -> None:
