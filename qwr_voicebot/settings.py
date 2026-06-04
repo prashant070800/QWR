@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "channels",
     "telephony",
+    "chatbot",
 ]
 
 if importlib.util.find_spec("jazzmin"):
