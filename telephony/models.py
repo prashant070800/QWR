@@ -39,6 +39,16 @@ class Call(CreatedUpdatedBaseModel):
         INCOMING = "incoming", "Incoming"
         OUTGOING = "outgoing", "Outgoing"
 
+    class State(models.TextChoices):
+        GREETING = "greeting", "Greeting"
+        MODE_SELECTION = "mode_selection", "Mode Selection"
+        IDENTITY_CHECK = "identity_check", "Identity Check"
+        UNKNOWN_CALLER_CHOICE = "unknown_caller_choice", "Unknown Caller Choice"
+        INTAKE = "intake", "Intake"
+        CONVERSATION = "conversation", "Conversation"
+        SUMMARY_CONFIRM = "summary_confirm", "Summary Confirm"
+        ENDED = "ended", "Ended"
+
     id = models.BigAutoField(primary_key=True)
     call_sid = models.CharField(max_length=255, unique=True)
     stream_sid = models.CharField(max_length=255, blank=True, null=True)
@@ -48,6 +58,12 @@ class Call(CreatedUpdatedBaseModel):
         max_length=20,
         choices=Direction.choices,
         default=Direction.INCOMING,
+        db_index=True,
+    )
+    call_state = models.CharField(
+        max_length=50,
+        choices=State.choices,
+        default=State.GREETING,
         db_index=True,
     )
     selected_mode = models.CharField(max_length=100, blank=True, null=True)

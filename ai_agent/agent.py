@@ -196,10 +196,12 @@ class QWRAgent:
         agent_name: str | None = None,
         welcome_message: str | None = None,
         business_url: str | None = None,
+        selected_mode: str | None = None,
     ) -> None:
         self.call_id = call_id or "unknown"
         self.call_sid = call_sid or "unknown"
         self.stream_sid = stream_sid or "unknown"
+        self.selected_mode = selected_mode  # think, challenge, explore, guide
 
         self._llm: LLMProvider = llm or get_llm_provider(settings)
         
@@ -209,7 +211,7 @@ class QWRAgent:
         self._log_prefix = f"call_id={self.call_id} call_sid={self.call_sid} stream_sid={self.stream_sid}"
 
         self.agent_name = agent_name or settings.ai_agent_name
-        self.welcome_message = welcome_message or settings.ai_welcome_message
+        self.welcome_message = welcome_message
 
         # Determine the base system prompt
         base_prompt = system_prompt or settings.ai_system_prompt or QWR_SYSTEM_PROMPT
@@ -217,6 +219,11 @@ class QWRAgent:
         # If agent name is set, inject it into the prompt instruction
         if self.agent_name:
             base_prompt = f"Your name is {self.agent_name}. Speak as {self.agent_name}.\n{base_prompt}"
+        
+        # Inject selected mode prompt if provided
+        if self.selected_mode:
+            from ai_agent.modes import inject_mode_into_system_prompt
+            base_prompt = inject_mode_into_system_prompt(base_prompt, self.selected_mode)
         
         self.system_prompt = base_prompt + (
             "\n\nIMPORTANT: For every turn of the conversation, you will receive "
@@ -231,12 +238,12 @@ class QWRAgent:
         )
 
         logger.info(
-            "%s QWRAgent initialised provider=%s model=%s agent_name=%s welcome_msg=%s",
+            "%s QWRAgent initialised provider=%s model=%s agent_name=%s selected_mode=%s",
             self._log_prefix,
             self._llm.provider_name,
             self._llm.model_name,
             self.agent_name,
-            self.welcome_message,
+            self.selected_mode,
         )
 
     # ------------------------------------------------------------------
