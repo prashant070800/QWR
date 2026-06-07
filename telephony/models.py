@@ -72,6 +72,10 @@ class Call(CreatedUpdatedBaseModel):
     profile = models.ForeignKey(Profile, on_delete=models.SET_NULL, null=True, blank=True, related_name="calls")
     completed_on = models.DateTimeField(blank=True, null=True)
     recording_url = models.URLField(max_length=500, blank=True, null=True)
+    end_reason = models.CharField(
+        max_length=255, blank=True, null=True,
+        help_text="Why the call ended: caller_hangup, no_input_timeout, ai_ended, error",
+    )
 
     def __str__(self):
         return f"Call {self.call_sid} - {self.from_number}"
