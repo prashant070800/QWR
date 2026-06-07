@@ -270,8 +270,19 @@ class GeminiLiveSession:
             "from the caller.\n"
         )
 
+        system_instruction += (
+            "\n--- WEB SEARCH & LIVE DATA ---\n"
+            "You have access to Google Search. Use it automatically to answer "
+            "factual questions, look up current events, or find information about "
+            "a specific company/website. If the user asks about QWR, ALWAYS search "
+            "'site:questionwhatsreal.com' or look up the latest info about QWR "
+            "(Question What's Real) to provide accurate, up-to-date answers. Do not "
+            "make up facts. If a user gives you a URL to look up, use the search "
+            "tool to fetch information from it.\n"
+        )
+
         # Define function tools
-        tools = types.Tool(
+        func_tools = types.Tool(
             function_declarations=[
                 # --- select_mode ---
                 types.FunctionDeclaration(
@@ -361,7 +372,7 @@ class GeminiLiveSession:
             ),
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
-            tools=[tools],
+            tools=[func_tools, types.Tool(google_search=types.GoogleSearch())],
         )
 
         logger.info(
