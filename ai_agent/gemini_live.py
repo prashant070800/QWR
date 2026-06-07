@@ -145,7 +145,16 @@ class GeminiLiveSession:
             )
 
         system_instruction += (
-            "\n\n--- CALL CONTROL ---\n"
+            "\n\n--- VOICE CALL BEHAVIOR ---\n"
+            "You are on a live phone call. Follow these rules:\n"
+            "- If you cannot understand the caller or the audio is unclear, "
+            "say something like 'Sorry, I didn't quite catch that — could you "
+            "repeat?' Do NOT stay silent.\n"
+            "- If the caller's response is too short or ambiguous, ask a brief "
+            "clarifying question.\n"
+            "- Keep responses concise — this is a phone call, not a text chat.\n"
+            "- Speak naturally and conversationally, not like reading a script.\n"
+            "\n--- CALL CONTROL ---\n"
             "You have an end_call tool. Use it ONLY when:\n"
             "- The caller says goodbye, thanks you, or confirms they are done.\n"
             "- The caller explicitly asks to end the call.\n"
