@@ -303,6 +303,7 @@ class GeminiLiveConsumer(AsyncJsonWebsocketConsumer):
             on_turn_complete=self._on_gemini_turn_complete,
             on_interrupted=self._on_gemini_interrupted,
             on_end_call=self._on_gemini_end_call,
+            on_mode_selected=self._on_gemini_mode_selected,
         )
 
         t_connect = time.monotonic()
@@ -509,6 +510,26 @@ class GeminiLiveConsumer(AsyncJsonWebsocketConsumer):
         self.state.end_reason = f"ai_ended:{reason}"
         # Wait a moment for any final farewell audio to play, then close
         asyncio.create_task(self._delayed_close(3.0))
+
+    async def _on_gemini_mode_selected(self, mode: str) -> None:
+        """Called when Gemini invokes select_mode — store in call record."""
+        logger.info(
+            "%s 🎯 Mode selected: %s",
+            self.state.log_prefix, mode,
+        )
+        # Update call record in DB
+        if self.state.call_sid:
+            try:
+                await self.storage.update_call(
+                    call_sid=self.state.call_sid,
+                    updates={"selected_mode": mode},
+                    call_id=self.state.call_id,
+                )
+            except Exception as exc:
+                logger.error(
+                    "%s Failed to store selected_mode: %s",
+                    self.state.log_prefix, exc,
+                )
 
     # ------------------------------------------------------------------
     # Silence watchdog callbacks

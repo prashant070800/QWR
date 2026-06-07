@@ -89,6 +89,7 @@ class GeminiLiveSession:
         on_turn_complete: Callable[[LiveTranscript], Awaitable[None]] | None = None,
         on_interrupted: Callable[[], Awaitable[None]] | None = None,
         on_end_call: Callable[[str], Awaitable[None]] | None = None,
+        on_mode_selected: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._api_key = api_key or settings.gemini_api_key
         self._model = model or settings.gemini_live_model
@@ -105,6 +106,7 @@ class GeminiLiveSession:
         self._on_turn_complete = on_turn_complete
         self._on_interrupted = on_interrupted
         self._on_end_call = on_end_call
+        self._on_mode_selected = on_mode_selected
 
         # Session state
         self._client = None
@@ -148,12 +150,64 @@ class GeminiLiveSession:
             "\n\n--- VOICE CALL BEHAVIOR ---\n"
             "You are on a live phone call. Follow these rules:\n"
             "- If you cannot understand the caller or the audio is unclear, "
-            "say something like 'Sorry, I didn't quite catch that — could you "
+            "say something like 'Sorry, I didn’t quite catch that — could you "
             "repeat?' Do NOT stay silent.\n"
             "- If the caller's response is too short or ambiguous, ask a brief "
             "clarifying question.\n"
             "- Keep responses concise — this is a phone call, not a text chat.\n"
             "- Speak naturally and conversationally, not like reading a script.\n"
+            "\n--- MODE SELECTION ---\n"
+            "Early in the call, AFTER greeting the caller, offer them four "
+            "conversation modes. Say something like: "
+            "'I can chat with you in different styles. You can pick one by "
+            "saying its name or pressing the number on your keypad: "
+            "1 for Think, 2 for Challenge, 3 for Explore, or 4 for Guide. "
+            "Which would you like?'\n"
+            "\n"
+            "Accept BOTH spoken answers (\"I want Challenge mode\", \"number two\", "
+            "\"think\") AND keypad input (\"User pressed key 2\" means Challenge). "
+            "If the caller says something unclear, re-prompt once. "
+            "If they don't choose, default to Think mode.\n"
+            "\n"
+            "When the caller picks a mode, call the select_mode tool, then "
+            "confirm: 'Great, we\'re in [mode] mode.' Then SHIFT your behavior "
+            "to match that mode\'s style as defined below.\n"
+            "\n"
+            "MODE DEFINITIONS:\n"
+            "\n"
+            "1 — THINK:\n"
+            "A thinking partner — a sharp, curious friend you can think out loud "
+            "with. Engage with the substance of what the caller says: react, "
+            "agree, disagree, build on it, share real opinions with reasoning. "
+            "Ask a question only when you genuinely need more to be useful, one "
+            "at a time. Don\'t bounce every statement back as a question; don\'t "
+            "play therapist. Be brief when they\'re brief, expand when they expand.\n"
+            "\n"
+            "2 — CHALLENGE:\n"
+            "Devil\'s advocate, on the caller\'s side but refusing to nod along. "
+            "Pressure-test their claim with real, specific objections drawn from "
+            "what they actually said. Ask for evidence; surface hidden assumptions; "
+            "steelman the counter-argument. Concede honestly when they make a good "
+            "point ('Fair.'), then ask the next harder question. Don\'t nitpick "
+            "for cheap points, don\'t be contrarian forever, don\'t get hostile.\n"
+            "\n"
+            "3 — EXPLORE:\n"
+            "Voice-based learning. The caller names a topic; explain it "
+            "conversationally in 90-second to 2-minute chunks, then pause and "
+            "check in ('Want me to go deeper, or shift?'). Use analogies and "
+            "concrete examples, not jargon or bullet-point delivery. Admit what\'s "
+            "contested vs settled, and say 'honestly, I don\'t know' rather than "
+            "bluffing. Talk more than you listen — but never for more than two "
+            "minutes without checking in.\n"
+            "\n"
+            "4 — GUIDE:\n"
+            "A steadier, slower hand — for working through a decision between "
+            "options, or sitting with something difficult. Slow the pace, offer "
+            "structure when the caller is overwhelmed, gently name the shape of "
+            "the problem ('It sounds like X matters more to you than Y'). You may "
+            "offer a frame, but do not give direct advice ('you should do X' is "
+            "out). Acknowledge difficulty briefly, then keep moving. Walk "
+            "alongside; don\'t lead, don\'t decide for them.\n"
             "\n--- CALL CONTROL ---\n"
             "You have an end_call tool. Use it ONLY when:\n"
             "- The caller says goodbye, thanks you, or confirms they are done.\n"
@@ -164,9 +218,33 @@ class GeminiLiveSession:
             "from the caller.\n"
         )
 
-        # Define the end_call function tool
-        end_call_tool = types.Tool(
+        # Define function tools
+        tools = types.Tool(
             function_declarations=[
+                # --- select_mode ---
+                types.FunctionDeclaration(
+                    name="select_mode",
+                    description=(
+                        "Set the conversation mode after the caller picks one. "
+                        "Call this when the caller chooses Think, Challenge, "
+                        "Explore, or Guide — by voice or keypad."
+                    ),
+                    parameters=types.Schema(
+                        type="OBJECT",
+                        properties={
+                            "mode": types.Schema(
+                                type="STRING",
+                                description=(
+                                    "The selected mode. Must be one of: "
+                                    "'think', 'challenge', 'explore', 'guide'"
+                                ),
+                                enum=["think", "challenge", "explore", "guide"],
+                            ),
+                        },
+                        required=["mode"],
+                    ),
+                ),
+                # --- end_call ---
                 types.FunctionDeclaration(
                     name="end_call",
                     description=(
@@ -199,7 +277,7 @@ class GeminiLiveSession:
             ),
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
-            tools=[end_call_tool],
+            tools=[tools],
         )
 
         logger.info(
@@ -502,25 +580,57 @@ class GeminiLiveSession:
         self._current_transcript = LiveTranscript()
 
     async def _handle_tool_call(self, tool_call: Any) -> None:
-        """Process tool calls from Gemini (currently only end_call).
+        """Process tool calls from Gemini (select_mode, end_call).
 
-        When Gemini calls end_call, we:
-        1. Log the reason
+        For each tool call:
+        1. Log it
         2. Send the function response back (required by protocol)
-        3. Notify the consumer to disconnect
+        3. Notify the consumer via callback
         """
         if not self._session or not self._genai_types:
             return
 
         for fc in tool_call.function_calls:
             logger.info(
-                "%s 🔚 Gemini called tool=%s args=%s",
+                "%s 🛠 Gemini called tool=%s args=%s",
                 self._log_prefix,
                 fc.name,
                 fc.args,
             )
 
-            if fc.name == "end_call":
+            if fc.name == "select_mode":
+                mode = (fc.args or {}).get("mode", "think")
+                logger.info(
+                    "%s 🎯 Mode selected: %s",
+                    self._log_prefix, mode,
+                )
+
+                # Send tool response back
+                try:
+                    await self._session.send_tool_response(
+                        function_responses=[
+                            self._genai_types.FunctionResponse(
+                                name=fc.name,
+                                id=fc.id,
+                                response={
+                                    "status": "mode_set",
+                                    "mode": mode,
+                                    "message": f"Mode set to {mode}. Shift your behavior now.",
+                                },
+                            )
+                        ]
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "%s Failed to send select_mode response: %s",
+                        self._log_prefix, exc,
+                    )
+
+                # Notify consumer to store mode
+                if self._on_mode_selected:
+                    await self._on_mode_selected(mode)
+
+            elif fc.name == "end_call":
                 reason = (fc.args or {}).get("reason", "ai_ended")
 
                 # Send tool response back (Gemini protocol requires it)
@@ -536,7 +646,7 @@ class GeminiLiveSession:
                     )
                 except Exception as exc:
                     logger.warning(
-                        "%s Failed to send tool response: %s",
+                        "%s Failed to send end_call response: %s",
                         self._log_prefix, exc,
                     )
 
