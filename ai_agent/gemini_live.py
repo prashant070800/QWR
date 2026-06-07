@@ -88,6 +88,7 @@ class GeminiLiveSession:
         on_audio: Callable[[bytes], Awaitable[None]] | None = None,
         on_turn_complete: Callable[[LiveTranscript], Awaitable[None]] | None = None,
         on_interrupted: Callable[[], Awaitable[None]] | None = None,
+        on_end_call: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._api_key = api_key or settings.gemini_api_key
         self._model = model or settings.gemini_live_model
@@ -103,6 +104,7 @@ class GeminiLiveSession:
         self._on_audio = on_audio
         self._on_turn_complete = on_turn_complete
         self._on_interrupted = on_interrupted
+        self._on_end_call = on_end_call
 
         # Session state
         self._client = None
@@ -134,13 +136,52 @@ class GeminiLiveSession:
         api_key = self._api_key.strip("'\"")
         client = genai.Client(api_key=api_key)
 
-        # Build system instruction
+        # Build system instruction — include end_call tool guidance
         system_instruction = self._system_prompt
         if self._agent_name:
             system_instruction = (
                 f"Your name is {self._agent_name}. "
                 f"Speak as {self._agent_name}.\n{system_instruction}"
             )
+
+        system_instruction += (
+            "\n\n--- CALL CONTROL ---\n"
+            "You have an end_call tool. Use it ONLY when:\n"
+            "- The caller says goodbye, thanks you, or confirms they are done.\n"
+            "- The caller explicitly asks to end the call.\n"
+            "- The conversation has naturally concluded with no more questions.\n"
+            "Always say a brief farewell BEFORE calling end_call.\n"
+            "Never call end_call mid-conversation or without a clear signal "
+            "from the caller.\n"
+        )
+
+        # Define the end_call function tool
+        end_call_tool = types.Tool(
+            function_declarations=[
+                types.FunctionDeclaration(
+                    name="end_call",
+                    description=(
+                        "End the phone call. Call this AFTER saying goodbye "
+                        "when the caller wants to hang up or the conversation "
+                        "is complete."
+                    ),
+                    parameters=types.Schema(
+                        type="OBJECT",
+                        properties={
+                            "reason": types.Schema(
+                                type="STRING",
+                                description=(
+                                    "Why the call is ending. Examples: "
+                                    "'conversation_complete', 'caller_goodbye', "
+                                    "'caller_request'"
+                                ),
+                            ),
+                        },
+                        required=["reason"],
+                    ),
+                )
+            ]
+        )
 
         config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
@@ -149,6 +190,7 @@ class GeminiLiveSession:
             ),
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
+            tools=[end_call_tool],
         )
 
         logger.info(
@@ -325,9 +367,14 @@ class GeminiLiveSession:
                     response_count += 1
                     turn_response_count += 1
 
+                    # --- Tool calls (e.g. end_call) ---
+                    if response.tool_call:
+                        await self._handle_tool_call(response.tool_call)
+                        continue
+
                     content = response.server_content
                     if content is None:
-                        # Non-content response (e.g. tool_call) — log it
+                        # Non-content response — log it
                         if response_count <= 5 or response_count % 100 == 0:
                             logger.debug(
                                 "%s 📡 Gemini recv #%d (non-content): %s",
@@ -444,3 +491,50 @@ class GeminiLiveSession:
 
         # Reset for next turn
         self._current_transcript = LiveTranscript()
+
+    async def _handle_tool_call(self, tool_call: Any) -> None:
+        """Process tool calls from Gemini (currently only end_call).
+
+        When Gemini calls end_call, we:
+        1. Log the reason
+        2. Send the function response back (required by protocol)
+        3. Notify the consumer to disconnect
+        """
+        if not self._session or not self._genai_types:
+            return
+
+        for fc in tool_call.function_calls:
+            logger.info(
+                "%s 🔚 Gemini called tool=%s args=%s",
+                self._log_prefix,
+                fc.name,
+                fc.args,
+            )
+
+            if fc.name == "end_call":
+                reason = (fc.args or {}).get("reason", "ai_ended")
+
+                # Send tool response back (Gemini protocol requires it)
+                try:
+                    await self._session.send_tool_response(
+                        function_responses=[
+                            self._genai_types.FunctionResponse(
+                                name=fc.name,
+                                id=fc.id,
+                                response={"status": "call_ending", "reason": reason},
+                            )
+                        ]
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "%s Failed to send tool response: %s",
+                        self._log_prefix, exc,
+                    )
+
+                # Notify consumer to disconnect
+                if self._on_end_call:
+                    await self._on_end_call(reason)
+            else:
+                logger.warning(
+                    "%s Unknown tool call: %s", self._log_prefix, fc.name,
+                )

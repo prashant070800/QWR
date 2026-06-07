@@ -302,6 +302,7 @@ class GeminiLiveConsumer(AsyncJsonWebsocketConsumer):
             on_audio=self._on_gemini_audio,
             on_turn_complete=self._on_gemini_turn_complete,
             on_interrupted=self._on_gemini_interrupted,
+            on_end_call=self._on_gemini_end_call,
         )
 
         t_connect = time.monotonic()
@@ -482,19 +483,6 @@ class GeminiLiveConsumer(AsyncJsonWebsocketConsumer):
                     self.state.log_prefix, exc,
                 )
 
-        # Check for AI-initiated call end
-        if bot_text and "[END_CALL" in bot_text:
-            import re
-            match = re.search(r'\[END_CALL\s+reason="([^"]+)"\]', bot_text)
-            reason = match.group(1) if match else "ai_ended"
-            logger.info(
-                "%s 🔚 AI initiated call end: reason=%s",
-                self.state.log_prefix, reason,
-            )
-            self.state.end_reason = reason
-            # Allow final audio to play, then close
-            asyncio.create_task(self._delayed_close(2.0))
-
     async def _on_gemini_interrupted(self) -> None:
         """Called when user barges in — clear queued audio."""
         while not self._audio_queue.empty():
@@ -511,6 +499,16 @@ class GeminiLiveConsumer(AsyncJsonWebsocketConsumer):
                 })
             except Exception:
                 pass
+
+    async def _on_gemini_end_call(self, reason: str) -> None:
+        """Called when Gemini invokes the end_call tool — disconnect gracefully."""
+        logger.info(
+            "%s 🔚 AI ended call: reason=%s",
+            self.state.log_prefix, reason,
+        )
+        self.state.end_reason = f"ai_ended:{reason}"
+        # Wait a moment for any final farewell audio to play, then close
+        asyncio.create_task(self._delayed_close(3.0))
 
     # ------------------------------------------------------------------
     # Silence watchdog callbacks
