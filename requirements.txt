@@ -10,6 +10,9 @@ django-jazzmin>=3.0,<4.0
 # ── Config / env ────────────────────────────────────────────────────────────
 python-decouple>=3.8
 
+# ── Database (Supabase PostgreSQL) ──────────────────────────────────────────
+psycopg2-binary>=2.9
+
 # ── HTTP client (QWR website scraper + STT/TTS REST calls) ──────────────────
 httpx>=0.27
 
