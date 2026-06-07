@@ -12,7 +12,7 @@
 | 1 | Voice naturalness & latency | 20% | 🟢 Done (README pending) |
 | 2 | Transcription accuracy & WER measurement | 15% | 🟢 Done (measure pending) |
 | 3 | Mode selection + mode prompts + DTMF dual input | 20% | 🟢 Done |
-| 4 | Web search + live company data (questionwhatsreal.com) | 5% | 🔴 Not done |
+| 4 | Web search + live company data (questionwhatsreal.com) | 5% | 🟢 Done |
 | 5 | Supabase schema & speaker-labeled storage | 15% | 🟢 Done (connect when ready) |
 | 6 | Caller identity / anonymous flow & extraction | 10% | 🟢 Done |
 | 7 | Session summary report (email/SMS or link) | 10% | 🟡 Partial |
@@ -91,12 +91,12 @@
 ## 4. Web Search & Live Company Data — 5%
 
 ### 4.1 Web search during calls
-- [ ] **Web search tool enabled** for factual / current questions
+- [x] **Web search tool enabled** for factual / current questions
 - [x] QWR fact sheet hardcoded in system prompt (static, not live)
 
 ### 4.2 Live data from questionwhatsreal.com
-- [ ] **Fetch from questionwhatsreal.com** as primary live source
-- [ ] **Products, industries, about pages scraped/fetched**
+- [x] **Fetch from questionwhatsreal.com** as primary live source via Google Search tool
+- [x] **Products, industries, about pages scraped/fetched** via Google Search tool
 
 ### 4.3 LinkedIn (optional)
 - [ ] LinkedIn public data (optional, note limitations)
