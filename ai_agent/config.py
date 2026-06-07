@@ -37,6 +37,25 @@ class AgentSettings:
     # ------------------------------------------------------------------ #
     # LLM provider selection                                               #
     # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------ #
+    # Voice engine selection                                               #
+    # ------------------------------------------------------------------ #
+    # "gemini_live" = Gemini Live API (audio-in → audio-out, low latency)
+    # "pipeline"    = Traditional STT → LLM → TTS chain
+    voice_engine: str = field(
+        default_factory=lambda: _env("VOICE_ENGINE", "gemini_live")
+    )
+
+    # Gemini Live API model (only used when VOICE_ENGINE=gemini_live)
+    gemini_live_model: str = field(
+        default_factory=lambda: _env(
+            "GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview"
+        )
+    )
+
+    # ------------------------------------------------------------------ #
+    # LLM provider selection (used by pipeline engine)                     #
+    # ------------------------------------------------------------------ #
     # Supported values: "gemini" | "openai" | "anthropic"
     ai_provider: str = field(default_factory=lambda: _env("AI_PROVIDER", "gemini"))
 
@@ -127,6 +146,19 @@ class AgentSettings:
     # consider the user has finished speaking and send audio to STT.
     stt_silence_chunks: int = field(
         default_factory=lambda: int(_env("STT_SILENCE_CHUNKS", "10"))
+    )
+
+    # ------------------------------------------------------------------ #
+    # Silence watchdog (no-input recovery)                                 #
+    # ------------------------------------------------------------------ #
+    silence_initial_timeout_s: float = field(
+        default_factory=lambda: float(_env("SILENCE_INITIAL_TIMEOUT_S", "15"))
+    )
+    silence_reprompt_timeout_s: float = field(
+        default_factory=lambda: float(_env("SILENCE_REPROMPT_TIMEOUT_S", "10"))
+    )
+    silence_max_no_input: int = field(
+        default_factory=lambda: int(_env("SILENCE_MAX_NO_INPUT", "3"))
     )
 
     # ------------------------------------------------------------------ #

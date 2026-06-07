@@ -18,8 +18,11 @@ gTTS>=2.5
 pydub>=0.25
 
 # ── LLM providers (install only what you need) ──────────────────────────────
-# Gemini (default)
+# Gemini (default — text/batch pipeline)
 google-generativeai>=0.8
+
+# Gemini Live API (realtime audio-to-audio)
+google-genai>=1.0
 
 # OpenAI (optional — set AI_PROVIDER=openai)
 openai>=1.0
