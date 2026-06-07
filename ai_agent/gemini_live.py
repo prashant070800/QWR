@@ -84,12 +84,14 @@ class GeminiLiveSession:
         call_sid: str = "unknown",
         stream_sid: str = "unknown",
         call_id: str | None = None,
+        caller_profile: dict | None = None,
         exotel_sample_rate: int = EXOTEL_SAMPLE_RATE,
         on_audio: Callable[[bytes], Awaitable[None]] | None = None,
         on_turn_complete: Callable[[LiveTranscript], Awaitable[None]] | None = None,
         on_interrupted: Callable[[], Awaitable[None]] | None = None,
         on_end_call: Callable[[str], Awaitable[None]] | None = None,
         on_mode_selected: Callable[[str], Awaitable[None]] | None = None,
+        on_profile_updated: Callable[[dict], Awaitable[None]] | None = None,
     ) -> None:
         self._api_key = api_key or settings.gemini_api_key
         self._model = model or settings.gemini_live_model
@@ -99,6 +101,7 @@ class GeminiLiveSession:
         self.call_sid = call_sid
         self.stream_sid = stream_sid
         self.call_id = call_id or "unknown"
+        self._caller_profile = caller_profile
         self._exotel_sample_rate = exotel_sample_rate or EXOTEL_SAMPLE_RATE
 
         # Callbacks — the consumer wires these to stream audio to Exotel
@@ -107,6 +110,7 @@ class GeminiLiveSession:
         self._on_interrupted = on_interrupted
         self._on_end_call = on_end_call
         self._on_mode_selected = on_mode_selected
+        self._on_profile_updated = on_profile_updated
 
         # Session state
         self._client = None
@@ -138,12 +142,52 @@ class GeminiLiveSession:
         api_key = self._api_key.strip("'\"")
         client = genai.Client(api_key=api_key)
 
-        # Build system instruction — include end_call tool guidance
+        # Build system instruction
         system_instruction = self._system_prompt
         if self._agent_name:
             system_instruction = (
                 f"Your name is {self._agent_name}. "
                 f"Speak as {self._agent_name}.\n{system_instruction}"
+            )
+
+        # Inject caller identity context
+        profile = self._caller_profile or {}
+        caller_name = profile.get("name")
+        caller_phone = profile.get("phone", "unknown")
+        is_known = bool(caller_name and caller_name.strip())
+
+        if is_known:
+            system_instruction += (
+                f"\n\n--- CALLER IDENTITY ---\n"
+                f"This is a KNOWN caller. Greet them by name.\n"
+                f"Name: {caller_name}\n"
+                f"Phone: {caller_phone}\n"
+                f"Company: {profile.get('company') or 'not provided'}\n"
+                f"Role: {profile.get('role') or 'not provided'}\n"
+                f"City: {profile.get('city') or 'not provided'}\n"
+                f"Use this context to personalize the conversation. "
+                f"You may still ask if any details have changed.\n"
+            )
+        else:
+            system_instruction += (
+                f"\n\n--- CALLER IDENTITY ---\n"
+                f"This is an UNKNOWN caller (phone: {caller_phone}).\n"
+                f"After greeting and mode selection, ask if they'd like to "
+                f"share some details or stay anonymous. Say something like: "
+                f"'I don\'t think we\'ve spoken before. Would you like to "
+                f"tell me your name and a bit about yourself, or would you "
+                f"prefer to stay anonymous? You can also press 1 for yes or "
+                f"2 for no.'\n"
+                f"\n"
+                f"If they agree, run a short INTAKE — collect their name, "
+                f"company, role, city, and reason for calling through natural "
+                f"conversation (don\'t read a form). Extract details from "
+                f"what they say and call the update_profile tool to save them. "
+                f"Leave fields null if not mentioned — never guess or invent.\n"
+                f"\n"
+                f"If they decline, say 'No problem, let\'s continue' and "
+                f"proceed in anonymous mode.\n"
+                f"Once you learn their name, use it in later turns.\n"
             )
 
         system_instruction += (
@@ -244,6 +288,38 @@ class GeminiLiveSession:
                         required=["mode"],
                     ),
                 ),
+                # --- update_profile ---
+                types.FunctionDeclaration(
+                    name="update_profile",
+                    description=(
+                        "Save or update the caller's profile details extracted "
+                        "from natural conversation. Call this after the caller "
+                        "shares their name, company, role, city, or reason for "
+                        "calling. Only include fields the caller actually "
+                        "mentioned — omit or set to null if not provided."
+                    ),
+                    parameters=types.Schema(
+                        type="OBJECT",
+                        properties={
+                            "name": types.Schema(
+                                type="STRING",
+                                description="Caller's full name",
+                            ),
+                            "company": types.Schema(
+                                type="STRING",
+                                description="Caller's company or organization",
+                            ),
+                            "role": types.Schema(
+                                type="STRING",
+                                description="Caller's job title or role",
+                            ),
+                            "city": types.Schema(
+                                type="STRING",
+                                description="Caller's city",
+                            ),
+                        },
+                    ),
+                ),
                 # --- end_call ---
                 types.FunctionDeclaration(
                     name="end_call",
@@ -266,7 +342,7 @@ class GeminiLiveSession:
                         },
                         required=["reason"],
                     ),
-                )
+                ),
             ]
         )
 
@@ -398,7 +474,18 @@ class GeminiLiveSession:
             turn_start_monotonic=time.monotonic()
         )
 
-        if self._welcome_message:
+        caller_name = self._caller_name()
+
+        if caller_name:
+            base_greeting = (
+                self._welcome_message
+                or "Welcome to QWR, how can I help you?"
+            )
+            prompt = (
+                "Say exactly this to the caller as your greeting: "
+                f"\"Hi {caller_name}. {base_greeting}\""
+            )
+        elif self._welcome_message:
             prompt = (
                 f"Say exactly this to the caller as your greeting: "
                 f"\"{self._welcome_message}\""
@@ -421,6 +508,15 @@ class GeminiLiveSession:
                 "%s Failed to send greeting prompt: %s",
                 self._log_prefix, exc,
             )
+
+    def _caller_name(self) -> str | None:
+        """Return a clean caller name if this profile already has one."""
+        raw_name = (self._caller_profile or {}).get("name")
+        if not isinstance(raw_name, str):
+            return None
+
+        name = " ".join(raw_name.split())
+        return name or None
 
     def get_transcripts(self) -> list[LiveTranscript]:
         """Return all completed turn transcripts for this call."""
@@ -629,6 +725,42 @@ class GeminiLiveSession:
                 # Notify consumer to store mode
                 if self._on_mode_selected:
                     await self._on_mode_selected(mode)
+
+            elif fc.name == "update_profile":
+                args = fc.args or {}
+                # Filter out None/empty values
+                profile_updates = {
+                    k: v for k, v in args.items()
+                    if v and isinstance(v, str) and v.strip()
+                }
+                logger.info(
+                    "%s 👤 Profile update: %s",
+                    self._log_prefix, profile_updates,
+                )
+
+                # Send tool response back
+                try:
+                    await self._session.send_tool_response(
+                        function_responses=[
+                            self._genai_types.FunctionResponse(
+                                name=fc.name,
+                                id=fc.id,
+                                response={
+                                    "status": "profile_updated",
+                                    "fields": list(profile_updates.keys()),
+                                },
+                            )
+                        ]
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "%s Failed to send update_profile response: %s",
+                        self._log_prefix, exc,
+                    )
+
+                # Notify consumer to persist
+                if self._on_profile_updated and profile_updates:
+                    await self._on_profile_updated(profile_updates)
 
             elif fc.name == "end_call":
                 reason = (fc.args or {}).get("reason", "ai_ended")
