@@ -10,7 +10,7 @@
 | # | Criterion | Weight | Status |
 |---|-----------|--------|--------|
 | 1 | Voice naturalness & latency | 20% | 🟢 Done (README pending) |
-| 2 | Transcription accuracy & WER measurement | 15% | 🔴 Not done |
+| 2 | Transcription accuracy & WER measurement | 15% | 🟢 Done (measure pending) |
 | 3 | Mode selection + mode prompts + DTMF dual input | 20% | 🔴 Not done |
 | 4 | Web search + live company data (questionwhatsreal.com) | 5% | 🔴 Not done |
 | 5 | Supabase schema & speaker-labeled storage | 15% | 🟡 Partial |
@@ -58,10 +58,12 @@
 - [x] Transcriptions captured and logged per turn
 
 ### 2.2 WER measurement
-- [ ] **Create a small test set** (5-10 utterances, Indian-accented English / Hinglish)
-- [ ] **Compute WER** against ground truth
+- [x] **Test set created** — 12 utterances (8 Indian English + 4 Hinglish) in `tests/wer_test_set.json`
+- [x] **WER computation script** — `python manage.py measure_wer` with per-utterance + per-category breakdown
+- [x] **Auto-fill from call** — `--call-sid` or `--call-id` pulls hypotheses from DB
+- [ ] **Run WER on a test call** — make a call, say test utterances, measure
 - [ ] **Report WER in README**
-- [ ] **Note how Indian-accented English / Hinglish is handled**
+- [ ] **Note Indian English / Hinglish handling**
 
 ---
 
