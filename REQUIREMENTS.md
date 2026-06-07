@@ -10,13 +10,8 @@
 | # | Criterion | Weight | Status |
 |---|-----------|--------|--------|
 | 1 | Voice naturalness & latency | 20% | 🟢 Done (README pending) |
-<<<<<<< Updated upstream
-| 2 | Transcription accuracy & WER measurement | 15% | 🔴 Not done |
-| 3 | Mode selection + mode prompts + DTMF dual input | 20% | 🔴 Not done |
-=======
 | 2 | Transcription accuracy & WER measurement | 15% | 🟢 Done (measure pending) |
 | 3 | Mode selection + mode prompts + DTMF dual input | 20% | 🟢 Done |
->>>>>>> Stashed changes
 | 4 | Web search + live company data (questionwhatsreal.com) | 5% | 🔴 Not done |
 | 5 | Supabase schema & speaker-labeled storage | 15% | 🟡 Partial |
 | 6 | Caller identity / anonymous flow & extraction | 10% | 🔴 Not done |
