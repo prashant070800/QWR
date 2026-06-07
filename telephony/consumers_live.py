@@ -265,6 +265,7 @@ class GeminiLiveConsumer(AsyncJsonWebsocketConsumer):
         self._validate_media_format()
 
         # Create Call + Profile records
+        caller_profile = None
         try:
             call_data = await self.storage.create_call(
                 call_sid=self.state.call_sid or "unknown-sid",
@@ -274,6 +275,18 @@ class GeminiLiveConsumer(AsyncJsonWebsocketConsumer):
                 direction="incoming",
             )
             self.state.call_id = call_data.get("id")
+
+            # Look up caller profile for identity flow
+            if self.state.from_number:
+                caller_profile = await self.storage.get_or_create_profile(
+                    self.state.from_number
+                )
+                logger.info(
+                    "%s 👤 Caller profile: name=%s phone=%s",
+                    self.state.log_prefix,
+                    caller_profile.get("name") or "unknown",
+                    caller_profile.get("phone"),
+                )
         except Exception as exc:
             logger.error(
                 "%s Failed to save call record: %s",
@@ -298,12 +311,14 @@ class GeminiLiveConsumer(AsyncJsonWebsocketConsumer):
             call_sid=self.state.call_sid or "unknown",
             stream_sid=self.state.stream_sid or "unknown",
             call_id=str(self.state.call_id) if self.state.call_id else None,
+            caller_profile=caller_profile,
             exotel_sample_rate=self._get_sample_rate(),
             on_audio=self._on_gemini_audio,
             on_turn_complete=self._on_gemini_turn_complete,
             on_interrupted=self._on_gemini_interrupted,
             on_end_call=self._on_gemini_end_call,
             on_mode_selected=self._on_gemini_mode_selected,
+            on_profile_updated=self._on_gemini_profile_updated,
         )
 
         t_connect = time.monotonic()
@@ -528,6 +543,24 @@ class GeminiLiveConsumer(AsyncJsonWebsocketConsumer):
             except Exception as exc:
                 logger.error(
                     "%s Failed to store selected_mode: %s",
+                    self.state.log_prefix, exc,
+                )
+
+    async def _on_gemini_profile_updated(self, updates: dict) -> None:
+        """Called when Gemini invokes update_profile — persist to DB."""
+        logger.info(
+            "%s 👤 Profile update: %s",
+            self.state.log_prefix, updates,
+        )
+        if self.state.from_number:
+            try:
+                await self.storage.update_profile(
+                    phone=self.state.from_number,
+                    updates=updates,
+                )
+            except Exception as exc:
+                logger.error(
+                    "%s Failed to update profile: %s",
                     self.state.log_prefix, exc,
                 )
 

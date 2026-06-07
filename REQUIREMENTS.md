@@ -14,7 +14,7 @@
 | 3 | Mode selection + mode prompts + DTMF dual input | 20% | 🟢 Done |
 | 4 | Web search + live company data (questionwhatsreal.com) | 5% | 🔴 Not done |
 | 5 | Supabase schema & speaker-labeled storage | 15% | 🟢 Done (connect when ready) |
-| 6 | Caller identity / anonymous flow & extraction | 10% | 🔴 Not done |
+| 6 | Caller identity / anonymous flow & extraction | 10% | 🟢 Done |
 | 7 | Session summary report (email/SMS or link) | 10% | 🟡 Partial |
 | 8 | Dashboard (live + history + search) | 5% | 🔴 Not done |
 | 9 | Decoupled architecture & README clarity | 5% | 🟡 Partial |
@@ -115,9 +115,9 @@
 - [x] **`psycopg2-binary`** added to requirements
 
 ### 5.2 Caller identity flow
-- [ ] **Match caller E.164 number against profiles on call start**
-- [ ] **Known caller → greet by name, link to profile**
-- [ ] **Unknown caller → offer to collect details or anonymous mode**
+- [x] **Match caller E.164 number against profiles on call start** — `get_or_create_profile` in `on_start`
+- [x] **Known caller → greet by name, link to profile** — profile injected into system prompt
+- [x] **Unknown caller → offer to collect details or anonymous mode** — system prompt instructs intake or anonymous
 - [x] Profile model with E.164 normalization
 - [x] Call → Profile FK relationship exists
 
