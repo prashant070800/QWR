@@ -474,7 +474,18 @@ class GeminiLiveSession:
             turn_start_monotonic=time.monotonic()
         )
 
-        if self._welcome_message:
+        caller_name = self._caller_name()
+
+        if caller_name:
+            base_greeting = (
+                self._welcome_message
+                or "Welcome to QWR, how can I help you?"
+            )
+            prompt = (
+                "Say exactly this to the caller as your greeting: "
+                f"\"Hi {caller_name}. {base_greeting}\""
+            )
+        elif self._welcome_message:
             prompt = (
                 f"Say exactly this to the caller as your greeting: "
                 f"\"{self._welcome_message}\""
@@ -497,6 +508,15 @@ class GeminiLiveSession:
                 "%s Failed to send greeting prompt: %s",
                 self._log_prefix, exc,
             )
+
+    def _caller_name(self) -> str | None:
+        """Return a clean caller name if this profile already has one."""
+        raw_name = (self._caller_profile or {}).get("name")
+        if not isinstance(raw_name, str):
+            return None
+
+        name = " ".join(raw_name.split())
+        return name or None
 
     def get_transcripts(self) -> list[LiveTranscript]:
         """Return all completed turn transcripts for this call."""
