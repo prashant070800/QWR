@@ -1,0 +1,90 @@
+{
+  "description": "WER test set for QWR Voice Bot — Indian-accented English & Hinglish utterances",
+  "instructions": "After a test call, fill in the 'hypothesis' field with what Gemini transcribed (from DB or logs). Run: python manage.py measure_wer",
+  "utterances": [
+    {
+      "id": 1,
+      "reference": "Hello, I want to know about QWR's VR headsets",
+      "hypothesis": "",
+      "category": "indian_english",
+      "notes": "Standard product inquiry"
+    },
+    {
+      "id": 2,
+      "reference": "My name is Prashant Singh and I am calling from Lucknow",
+      "hypothesis": "",
+      "category": "indian_english",
+      "notes": "Intake — Indian name + city"
+    },
+    {
+      "id": 3,
+      "reference": "Haan, mujhe challenge mode chahiye",
+      "hypothesis": "",
+      "category": "hinglish",
+      "notes": "Mode selection in Hinglish"
+    },
+    {
+      "id": 4,
+      "reference": "What is the price of VRone Pro headset?",
+      "hypothesis": "",
+      "category": "indian_english",
+      "notes": "Product pricing question"
+    },
+    {
+      "id": 5,
+      "reference": "Can you tell me about your education solutions for schools?",
+      "hypothesis": "",
+      "category": "indian_english",
+      "notes": "Industry-specific question"
+    },
+    {
+      "id": 6,
+      "reference": "Mera company ka naam TechStar hai, Pune mein hai",
+      "hypothesis": "",
+      "category": "hinglish",
+      "notes": "Intake — company and city in Hinglish"
+    },
+    {
+      "id": 7,
+      "reference": "I work as a software developer at Infosys in Bangalore",
+      "hypothesis": "",
+      "category": "indian_english",
+      "notes": "Intake — role, company, city with Indian accent"
+    },
+    {
+      "id": 8,
+      "reference": "Please connect me with your sales team for a bulk order",
+      "hypothesis": "",
+      "category": "indian_english",
+      "notes": "Follow-up request"
+    },
+    {
+      "id": 9,
+      "reference": "Kya QWR defence ke liye bhi products banata hai?",
+      "hypothesis": "",
+      "category": "hinglish",
+      "notes": "Defence solutions question in Hinglish"
+    },
+    {
+      "id": 10,
+      "reference": "Thank you so much, that was very helpful, goodbye",
+      "hypothesis": "",
+      "category": "indian_english",
+      "notes": "Call closing"
+    },
+    {
+      "id": 11,
+      "reference": "I am interested in ODM and OEM services for our company",
+      "hypothesis": "",
+      "category": "indian_english",
+      "notes": "Business inquiry with technical terms"
+    },
+    {
+      "id": 12,
+      "reference": "Humbl AI glasses ke baare mein batao",
+      "hypothesis": "",
+      "category": "hinglish",
+      "notes": "Product query in Hinglish"
+    }
+  ]
+}
