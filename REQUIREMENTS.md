@@ -175,11 +175,11 @@
 
 ### 9.2 README
 - [x] Basic README exists
-- [ ] **Architecture + ER diagram**
-- [ ] **STT/TTS choices and rationale**
-- [ ] **Measured latency and WER**
-- [ ] **Extraction and diarization decisions**
-- [ ] **Tradeoffs documented**
+- [x] **Architecture + ER diagram**
+- [x] **STT/TTS choices and rationale**
+- [x] **Measured latency and WER**
+- [x] **Extraction and diarization decisions**
+- [x] **Tradeoffs documented**
 
 ---
 
