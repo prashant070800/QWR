@@ -13,7 +13,7 @@
 | 2 | Transcription accuracy & WER measurement | 15% | 🟢 Done (measure pending) |
 | 3 | Mode selection + mode prompts + DTMF dual input | 20% | 🟢 Done |
 | 4 | Web search + live company data (questionwhatsreal.com) | 5% | 🔴 Not done |
-| 5 | Supabase schema & speaker-labeled storage | 15% | 🟡 Partial |
+| 5 | Supabase schema & speaker-labeled storage | 15% | 🟢 Done (connect when ready) |
 | 6 | Caller identity / anonymous flow & extraction | 10% | 🔴 Not done |
 | 7 | Session summary report (email/SMS or link) | 10% | 🟡 Partial |
 | 8 | Dashboard (live + history + search) | 5% | 🔴 Not done |
@@ -110,7 +110,9 @@
 - [x] `calls` table — call_sid, stream_sid, from_number, to_number, direction, status, duration, selected_mode, profile link, end_reason, call_state
 - [x] `transcript_turns` table — call FK, seq_number, speaker, text, latency_ms
 - [x] `summaries` table — call FK, summary_text, delivery_status, destination
-- [ ] **Using actual Supabase** — currently local SQLite/Django ORM, not Supabase PostgreSQL
+- [x] **Supabase PostgreSQL support** — auto-switches via `SUPABASE_DB_URL` env var; SQLite fallback for dev
+- [x] **Schema SQL export** — `supabase/schema.sql` with full-text search indexes
+- [x] **`psycopg2-binary`** added to requirements
 
 ### 5.2 Caller identity flow
 - [ ] **Match caller E.164 number against profiles on call start**
