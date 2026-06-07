@@ -10,7 +10,7 @@
 | # | Criterion | Weight | Status |
 |---|-----------|--------|--------|
 | 1 | Voice naturalness & latency | 20% | 🟢 Done (README pending) |
-| 2 | Transcription accuracy & WER measurement | 15% | 🟢 Done (measure pending) |
+| 2 | Transcription accuracy & WER measurement | 15% | 🟢 Done |
 | 3 | Mode selection + mode prompts + DTMF dual input | 20% | 🟢 Done |
 | 4 | Web search + live company data (questionwhatsreal.com) | 5% | 🟢 Done |
 | 5 | Supabase schema & speaker-labeled storage | 15% | 🟢 Done (connect when ready) |
@@ -58,10 +58,10 @@
 - [x] Transcriptions captured and logged per turn
 
 ### 2.2 WER measurement
-- [ ] **Create a small test set** (5-10 utterances, Indian-accented English / Hinglish)
-- [ ] **Compute WER** against ground truth
-- [ ] **Report WER in README**
-- [ ] **Note how Indian-accented English / Hinglish is handled**
+- [x] **Create a small test set** (5-10 utterances, Indian-accented English / Hinglish)
+- [x] **Compute WER** against ground truth
+- [x] **Report WER in README**
+- [x] **Note how Indian-accented English / Hinglish is handled**
 
 ---
 

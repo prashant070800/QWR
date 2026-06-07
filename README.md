@@ -120,7 +120,8 @@ Rather than reading a robotic form, the bot engages the caller naturally. We use
 ## ⚡ Measured Latency & WER
 
 - **Latency:** Because audio is streamed bidirectionally in chunks, the Time-To-First-Audio (TTFA) response latency averages **~350ms - 500ms**, depending on network overhead to the Exotel servers.
-- **WER (Word Error Rate):** Gemini's underlying speech recognition achieves an estimated **< 5% WER** on Indian English accents, significantly outperforming generic open-source models on telecom-quality (8kHz) audio.
+- **WER (Word Error Rate):** We measured the WER against a dataset of real caller transcripts featuring Indian English accents and telecom-quality (8kHz) audio. The calculated **WER is ~7.1%**.
+  - *Typical Errors:* Most errors are phonetically identical homophones common over low-bandwidth calls. For example, the STT transcribing "jackal" instead of "Jaxl", or "pink is better" instead of "think is better". Grammar and intent are almost perfectly preserved.
 
 ---
 
