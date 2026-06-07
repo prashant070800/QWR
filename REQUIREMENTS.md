@@ -16,7 +16,7 @@
 | 5 | Supabase schema & speaker-labeled storage | 15% | 🟢 Done (connect when ready) |
 | 6 | Caller identity / anonymous flow & extraction | 10% | 🟢 Done |
 | 7 | Session summary report (email/SMS or link) | 10% | 🟡 Partial |
-| 8 | Dashboard (live + history + search) | 5% | 🔴 Not done |
+| 8 | Dashboard (live + history + search) | 5% | 🟢 Done |
 | 9 | Decoupled architecture & README clarity | 5% | 🟡 Partial |
 
 ---
@@ -159,10 +159,10 @@
 
 ### 8.1 Web UI
 - [x] Django Admin with Call, Profile, TranscriptTurn, Summary views (`telephony/admin.py`)
-- [ ] **Dedicated dashboard UI** — live/active calls + history
-- [ ] **Per-call detail view** — speaker-labeled transcript, duration, linked profile, latency
-- [ ] **Transcript search / filter** (full-text search)
-- [ ] **Recording playback** (if available)
+- [x] **Dedicated dashboard UI** — live/active calls + history
+- [x] **Per-call detail view** — speaker-labeled transcript, duration, linked profile, latency
+- [x] **Transcript search / filter** (full-text search)
+- [x] **Recording playback** (if available)
 
 ---
 
