@@ -113,6 +113,7 @@ class GeminiLiveSession:
         self._connected = False
         self._current_transcript = LiveTranscript()
         self._turn_transcripts: list[LiveTranscript] = []
+        self._send_count: int = 0
 
         self._log_prefix = (
             f"call_id={self.call_id} call_sid={self.call_sid} "
@@ -225,6 +226,8 @@ class GeminiLiveSession:
             exotel_pcm, input_sample_rate, GEMINI_INPUT_SAMPLE_RATE
         )
 
+        self._send_count += 1
+
         try:
             await self._session.send_realtime_input(
                 audio=self._genai_types.Blob(
@@ -233,10 +236,11 @@ class GeminiLiveSession:
                 )
             )
         except Exception as exc:
-            logger.error(
-                "%s Failed to send audio to Gemini Live: %s",
-                self._log_prefix, exc,
-            )
+            if self._send_count <= 3 or self._send_count % 500 == 0:
+                logger.error(
+                    "%s Failed to send audio #%d to Gemini Live: %s",
+                    self._log_prefix, self._send_count, exc,
+                )
 
     async def send_text(self, text: str) -> None:
         """Send a text message to Gemini Live (e.g. DTMF override)."""
@@ -309,65 +313,101 @@ class GeminiLiveSession:
         if not self._session:
             return
 
+        response_count = 0
         try:
-            async for response in self._session.receive():
-                if not self._connected:
-                    break
+            while self._connected:
+                turn_response_count = 0
 
-                content = response.server_content
-                if content is None:
-                    continue
+                async for response in self._session.receive():
+                    if not self._connected:
+                        break
 
-                # --- Audio data from model ---
-                if content.model_turn and content.model_turn.parts:
-                    for part in content.model_turn.parts:
-                        if part.inline_data and part.inline_data.data:
-                            await self._handle_audio_chunk(
-                                part.inline_data.data
+                    response_count += 1
+                    turn_response_count += 1
+
+                    content = response.server_content
+                    if content is None:
+                        # Non-content response (e.g. tool_call) — log it
+                        if response_count <= 5 or response_count % 100 == 0:
+                            logger.debug(
+                                "%s 📡 Gemini recv #%d (non-content): %s",
+                                self._log_prefix,
+                                response_count,
+                                type(response).__name__,
+                            )
+                        continue
+
+                    # --- Audio data from model ---
+                    if content.model_turn and content.model_turn.parts:
+                        for part in content.model_turn.parts:
+                            if part.inline_data and part.inline_data.data:
+                                await self._handle_audio_chunk(
+                                    part.inline_data.data
+                                )
+
+                    # --- Input transcription (what the user said) ---
+                    if content.input_transcription:
+                        text = content.input_transcription.text or ""
+                        if text.strip():
+                            self._current_transcript.user_text += text
+                            # New user speech = start of a new turn
+                            if not self._current_transcript.turn_start_monotonic:
+                                self._current_transcript.turn_start_monotonic = (
+                                    time.monotonic()
+                                )
+                            logger.info(
+                                "%s 🎤 User transcription: %r",
+                                self._log_prefix,
+                                text.strip()[:100],
                             )
 
-                # --- Input transcription (what the user said) ---
-                if content.input_transcription:
-                    text = content.input_transcription.text or ""
-                    if text.strip():
-                        self._current_transcript.user_text += text
-                        # New user speech = start of a new turn
-                        if not self._current_transcript.turn_start_monotonic:
-                            self._current_transcript.turn_start_monotonic = (
-                                time.monotonic()
-                            )
+                    # --- Output transcription (what the bot said) ---
+                    if content.output_transcription:
+                        text = content.output_transcription.text or ""
+                        if text.strip():
+                            self._current_transcript.bot_text += text
 
-                # --- Output transcription (what the bot said) ---
-                if content.output_transcription:
-                    text = content.output_transcription.text or ""
-                    if text.strip():
-                        self._current_transcript.bot_text += text
+                    # --- Turn complete ---
+                    if content.turn_complete:
+                        await self._handle_turn_complete()
 
-                # --- Turn complete ---
-                if content.turn_complete:
-                    await self._handle_turn_complete()
+                    # --- Interrupted (barge-in) ---
+                    if content.interrupted:
+                        logger.info(
+                            "%s 🛑 Gemini Live: barge-in detected",
+                            self._log_prefix,
+                        )
+                        if self._on_interrupted:
+                            await self._on_interrupted()
 
-                # --- Interrupted (barge-in) ---
-                if content.interrupted:
-                    logger.info(
-                        "%s 🛑 Gemini Live: barge-in detected",
+                if self._connected:
+                    logger.debug(
+                        "%s Gemini Live turn receive completed responses=%d; "
+                        "waiting for next turn",
                         self._log_prefix,
+                        turn_response_count,
                     )
-                    if self._on_interrupted:
-                        await self._on_interrupted()
+                    if turn_response_count == 0:
+                        await asyncio.sleep(0.05)
 
         except asyncio.CancelledError:
             logger.info(
-                "%s Gemini Live receive loop cancelled",
+                "%s Gemini Live receive loop cancelled (responses=%d)",
                 self._log_prefix,
+                response_count,
             )
         except Exception as exc:
             logger.exception(
-                "%s ❌ Gemini Live receive loop error: %s",
-                self._log_prefix, exc,
+                "%s ❌ Gemini Live receive loop error (responses=%d): %s",
+                self._log_prefix, response_count, exc,
             )
-        finally:
             self._connected = False
+        finally:
+            logger.info(
+                "%s Gemini Live receive loop ended total_responses=%d",
+                self._log_prefix,
+                response_count,
+            )
 
     async def _handle_audio_chunk(self, gemini_24khz_pcm: bytes) -> None:
         """Process a chunk of audio from Gemini (24kHz) → resample → callback."""

@@ -362,15 +362,34 @@ class GeminiLiveConsumer(AsyncJsonWebsocketConsumer):
             return
 
         # Detect speech for silence watchdog
-        if not _is_silent(pcm_chunk):
+        is_silent = _is_silent(pcm_chunk)
+        if not is_silent:
             if self.silence_watchdog:
                 self.silence_watchdog.on_speech_detected()
 
-        # Forward to Gemini Live (handles resampling internally)
-        await self.gemini_session.send_audio(
-            pcm_chunk,
-            sample_rate=self._get_sample_rate(),
-        )
+        # Periodic diagnostic log (every 250 chunks = ~5s at 50 chunks/s)
+        if self.state.inbound_chunks % 250 == 1:
+            rms = _pcm_rms(pcm_chunk)
+            logger.info(
+                "%s 📊 Audio flow: inbound_chunks=%d outbound_chunks=%d "
+                "rms=%.0f silent=%s queue_size=%d gemini_connected=%s",
+                self.state.log_prefix,
+                self.state.inbound_chunks,
+                self.state.outbound_chunks,
+                rms,
+                is_silent,
+                self._audio_queue.qsize(),
+                self.gemini_session.is_connected if self.gemini_session else False,
+            )
+
+        # Forward to Gemini Live — fire-and-forget to avoid backpressure
+        if self.gemini_session and self.gemini_session.is_connected:
+            asyncio.create_task(
+                self.gemini_session.send_audio(
+                    pcm_chunk,
+                    sample_rate=self._get_sample_rate(),
+                )
+            )
 
     async def on_dtmf(self, content: dict[str, Any]) -> None:
         dtmf = content.get("dtmf") or {}
@@ -625,13 +644,17 @@ class GeminiLiveConsumer(AsyncJsonWebsocketConsumer):
 
 def _is_silent(pcm_chunk: bytes, threshold: int = 200) -> bool:
     """Return True if the PCM chunk RMS energy is below threshold."""
+    return _pcm_rms(pcm_chunk) < threshold
+
+
+def _pcm_rms(pcm_chunk: bytes) -> float:
+    """Calculate RMS energy of a 16-bit PCM chunk."""
     if len(pcm_chunk) < 2:
-        return True
+        return 0.0
     import struct
     num_samples = len(pcm_chunk) // 2
     try:
         samples = struct.unpack(f"<{num_samples}h", pcm_chunk[:num_samples * 2])
     except struct.error:
-        return True
-    rms = (sum(s * s for s in samples) / num_samples) ** 0.5
-    return rms < threshold
+        return 0.0
+    return (sum(s * s for s in samples) / num_samples) ** 0.5
