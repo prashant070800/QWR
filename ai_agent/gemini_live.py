@@ -123,6 +123,14 @@ class GeminiLiveSession:
         self._turn_transcripts: list[LiveTranscript] = []
         self._send_count: int = 0
 
+        # Token usage accumulator
+        self._token_usage: dict[str, int] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "thinking_tokens": 0,
+            "total_tokens": 0,
+        }
+
         self._log_prefix = (
             f"call_id={self.call_id} call_sid={self.call_sid} "
             f"stream_sid={self.stream_sid}"
@@ -526,6 +534,10 @@ class GeminiLiveSession:
     def is_connected(self) -> bool:
         return self._connected and self._session is not None
 
+    def get_token_usage(self) -> dict[str, int]:
+        """Return accumulated token usage for the entire call."""
+        return dict(self._token_usage)
+
     # ------------------------------------------------------------------
     # Background receive loop
     # ------------------------------------------------------------------
@@ -549,6 +561,22 @@ class GeminiLiveSession:
 
                     response_count += 1
                     turn_response_count += 1
+
+                    # --- Track token usage ---
+                    usage = getattr(response, "usage_metadata", None)
+                    if usage:
+                        self._token_usage["prompt_tokens"] += (
+                            getattr(usage, "prompt_token_count", 0) or 0
+                        )
+                        self._token_usage["completion_tokens"] += (
+                            getattr(usage, "candidates_token_count", 0) or 0
+                        )
+                        self._token_usage["thinking_tokens"] += (
+                            getattr(usage, "thoughts_token_count", 0) or 0
+                        )
+                        self._token_usage["total_tokens"] += (
+                            getattr(usage, "total_token_count", 0) or 0
+                        )
 
                     # --- Tool calls (e.g. end_call) ---
                     if response.tool_call:

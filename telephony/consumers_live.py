@@ -171,14 +171,18 @@ class GeminiLiveConsumer(AsyncJsonWebsocketConsumer):
         # Update call record
         duration_s = time.monotonic() - self.state.call_start_time
         if self.state.call_sid:
+            updates = {
+                "status": "completed",
+                "duration": int(duration_s),
+                "end_reason": self.state.end_reason,
+            }
+            if self.gemini_session:
+                updates["token_usage"] = self.gemini_session.get_token_usage()
+
             try:
                 await self.storage.update_call(
                     call_sid=self.state.call_sid,
-                    updates={
-                        "status": "completed",
-                        "duration": int(duration_s),
-                        "end_reason": self.state.end_reason,
-                    },
+                    updates=updates,
                     call_id=self.state.call_id,
                 )
             except Exception as exc:

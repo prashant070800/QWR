@@ -293,7 +293,15 @@ class CallStorage:
     # Summaries API
     # ------------------------------------------------------------------
 
-    async def save_summary(self, call_sid: str, summary_text: str, delivery_status: str = "none", destination: Optional[str] = None, call_id: Optional[str] = None) -> Dict[str, Any]:
+    async def save_summary(
+        self,
+        call_sid: str,
+        summary_text: str,
+        delivery_status: str = "none",
+        destination: Optional[str] = None,
+        call_id: Optional[str] = None,
+        ai_tokens_used: int = 0,
+    ) -> Dict[str, Any]:
         """Save a call summary record."""
         if self.use_supabase:
             if not call_id:
@@ -314,6 +322,7 @@ class CallStorage:
                 "summary_text": summary_text,
                 "delivery_status": delivery_status,
                 "destination": destination,
+                "ai_tokens_used": max(0, int(ai_tokens_used or 0)),
                 "created_at": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
             }
             headers_prefer = {**self.headers, "Prefer": "return=representation"}
@@ -342,5 +351,6 @@ class CallStorage:
                 summary_text=summary_text,
                 delivery_status=delivery_status,
                 destination=destination,
+                ai_tokens_used=max(0, int(ai_tokens_used or 0)),
             )
             return self._model_to_dict(summary)

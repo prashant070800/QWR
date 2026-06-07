@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from .base import LLMProvider, Message
+from .base import LLMProvider, Message, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,7 @@ class AnthropicProvider(LLMProvider):
     def __init__(self, api_key: str, model: str = "claude-3-5-haiku-20241022") -> None:
         self._api_key = api_key
         self._model = model
+        self._last_usage = TokenUsage()
 
     async def chat(
         self,
@@ -63,11 +64,20 @@ class AnthropicProvider(LLMProvider):
 
         response = await client.messages.create(**kwargs)
         reply = (response.content[0].text if response.content else "").strip()
+        usage = getattr(response, "usage", None)
+        input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+        output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        self._last_usage = TokenUsage(
+            prompt_tokens=input_tokens,
+            completion_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+        )
 
         logger.info(
-            "Anthropic reply model=%s length=%d preview=%r",
+            "Anthropic reply model=%s length=%d tokens=%d preview=%r",
             self._model,
             len(reply),
+            self._last_usage.total_tokens,
             reply[:80],
         )
         return reply

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from .base import LLMProvider, Message
+from .base import LLMProvider, Message, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ class GeminiProvider(LLMProvider):
     def __init__(self, api_key: str, model: str = "gemini-3.5-flash") -> None:
         self._api_key = api_key
         self._model = model
+        self._last_usage = TokenUsage()
         self._client = self._build_client()
 
     def _build_client(self):  # type: ignore[return]
@@ -79,7 +80,7 @@ class GeminiProvider(LLMProvider):
         model_names = _candidate_model_names(self._model)
 
         # google-generativeai is sync — run in executor to avoid blocking
-        def _sync_call() -> tuple[str, str]:
+        def _sync_call() -> tuple[str, str, TokenUsage]:
             import google.generativeai as genai  # type: ignore[import-untyped]
 
             model_kwargs: dict = {
@@ -105,7 +106,7 @@ class GeminiProvider(LLMProvider):
                     else:
                         response = model.generate_content("")
 
-                    return response.text.strip(), model_name
+                    return response.text.strip(), model_name, _usage_from_gemini_response(response)
                 except Exception as exc:
                     if not _is_unavailable_model_error(exc):
                         raise
@@ -121,12 +122,14 @@ class GeminiProvider(LLMProvider):
             raise RuntimeError("No Gemini model candidates configured")
 
         loop = asyncio.get_event_loop()
-        reply, model_name = await loop.run_in_executor(None, _sync_call)
+        reply, model_name, usage = await loop.run_in_executor(None, _sync_call)
+        self._last_usage = usage
 
         logger.info(
-            "Gemini reply model=%s length=%d preview=%r",
+            "Gemini reply model=%s length=%d tokens=%d preview=%r",
             model_name,
             len(reply),
+            usage.total_tokens,
             reply[:80],
         )
         return reply
@@ -160,4 +163,22 @@ def _is_unavailable_model_error(exc: Exception) -> bool:
         or "429" in message
         or "resource_exhausted" in message
         or "limit" in message
+    )
+
+
+def _usage_from_gemini_response(response) -> TokenUsage:
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        return TokenUsage()
+
+    prompt_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
+    completion_tokens = int(getattr(usage, "candidates_token_count", 0) or 0)
+    total_tokens = int(getattr(usage, "total_token_count", 0) or 0)
+    if total_tokens <= 0:
+        total_tokens = prompt_tokens + completion_tokens
+
+    return TokenUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
     )
