@@ -400,10 +400,13 @@ class QWRAgent:
 
 
 
-    async def generate_summary(self, turns: list[dict[str, Any]]) -> str:
-        """Generate a concise summary of the conversation turns using the configured LLM."""
+    async def generate_summary(self, turns: list[dict[str, Any]]) -> tuple[str, dict[str, int]]:
+        """Generate a concise summary of the conversation turns using the configured LLM.
+        
+        Returns a tuple of (summary_text, token_usage_dict).
+        """
         if not turns:
-            return "No conversation turns recorded."
+            return "No conversation turns recorded.", {}
 
         formatted_turns = []
         for turn in sorted(turns, key=lambda t: t.get("seq_number", 0)):
@@ -426,9 +429,18 @@ class QWRAgent:
             Message(role="user", content=prompt)
         ]
 
+        logger.info("%s 📝 Sending summary request to LLM:\n%s", self._log_prefix, prompt)
+
         try:
-            summary = await self._llm.chat(messages, max_tokens=256)
-            return summary.strip()
+            summary = await self._llm.chat(messages, max_tokens=1024)
+            usage = self._llm.last_usage
+            usage_dict = {
+                "prompt_tokens": usage.prompt_tokens,
+                "completion_tokens": usage.completion_tokens,
+                "thinking_tokens": getattr(usage, "thinking_tokens", 0),
+                "total_tokens": usage.total_tokens,
+            }
+            return summary.strip(), usage_dict
         except Exception as exc:
             logger.exception("%s Failed to generate summary via LLM: %s", self._log_prefix, exc)
-            return f"Summary generation failed: {exc}"
+            return f"Summary generation failed: {exc}", {}

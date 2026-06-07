@@ -30,6 +30,15 @@ class Message:
         return d
 
 
+@dataclass
+class TokenUsage:
+    """Token usage reported by an LLM provider."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
 class LLMProvider(ABC):
     """Abstract interface that every LLM backend must implement."""
 
@@ -54,6 +63,11 @@ class LLMProvider(ABC):
         str
             The assistant's reply text (stripped, non-empty).
         """
+
+    @property
+    def last_usage(self) -> TokenUsage:
+        """Usage metadata for the most recent provider call, if available."""
+        return getattr(self, "_last_usage", TokenUsage())
 
     @property
     @abstractmethod

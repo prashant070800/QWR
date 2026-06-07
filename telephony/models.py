@@ -69,6 +69,15 @@ class Call(CreatedUpdatedBaseModel):
     selected_mode = models.CharField(max_length=100, blank=True, null=True)
     duration = models.PositiveIntegerField(default=0)
     status = models.CharField(max_length=100)
+    token_usage = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Token usage breakdown for this call. "
+            "Keys: prompt_tokens, completion_tokens, thinking_tokens, "
+            "total_tokens, total_audio_tokens."
+        ),
+    )
     profile = models.ForeignKey(Profile, on_delete=models.SET_NULL, null=True, blank=True, related_name="calls")
     completed_on = models.DateTimeField(blank=True, null=True)
     recording_url = models.URLField(max_length=500, blank=True, null=True)
@@ -111,6 +120,14 @@ class Summary(CreatedUpdatedBaseModel):
     summary_text = models.TextField()
     delivery_status = models.CharField(max_length=100)
     destination = models.CharField(max_length=255, blank=True, null=True)
+    token_usage = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Token usage breakdown for summary generation. "
+            "Keys: prompt_tokens, completion_tokens, total_tokens."
+        ),
+    )
 
     def __str__(self):
         return f"Summary for {self.call.call_sid}"

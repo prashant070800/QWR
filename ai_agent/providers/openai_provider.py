@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from .base import LLMProvider, Message
+from .base import LLMProvider, Message, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,7 @@ class OpenAIProvider(LLMProvider):
     def __init__(self, api_key: str, model: str = "gpt-4o-mini") -> None:
         self._api_key = api_key
         self._model = model
+        self._last_usage = TokenUsage()
 
     async def chat(
         self,
@@ -51,11 +52,18 @@ class OpenAIProvider(LLMProvider):
         )
 
         reply = (response.choices[0].message.content or "").strip()
+        usage = response.usage
+        self._last_usage = TokenUsage(
+            prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+            completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+            total_tokens=int(getattr(usage, "total_tokens", 0) or 0),
+        )
 
         logger.info(
-            "OpenAI reply model=%s length=%d preview=%r",
+            "OpenAI reply model=%s length=%d tokens=%d preview=%r",
             self._model,
             len(reply),
+            self._last_usage.total_tokens,
             reply[:80],
         )
         return reply

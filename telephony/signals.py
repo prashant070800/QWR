@@ -70,7 +70,7 @@ async def _generate_and_send_summary_async(call_id):
         stream_sid=call.stream_sid,
         call_id=str(call.id),
     )
-    summary_text = await agent.generate_summary(turns)
+    summary_text, token_usage = await agent.generate_summary(turns)
 
     # 4. Save to DB under Unique constraint
     try:
@@ -79,6 +79,7 @@ async def _generate_and_send_summary_async(call_id):
             summary_text=summary_text,
             delivery_status="pending",
             destination=call.from_number,
+            token_usage=token_usage,
         )
     except Exception as exc:
         logger.warning("[SIGNAL] Unique constraint triggered or write failed for call_id=%s: %s", call_id, exc)
