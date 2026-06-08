@@ -1,0 +1,31 @@
+"""Migration to add call_state field to Call model."""
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ('telephony', '0004_remove_call_caller_number_call_recording_url_and_more'),
+    ]
+
+    operations = [
+        migrations.AddField(
+            model_name='call',
+            name='call_state',
+            field=models.CharField(
+                choices=[
+                    ('greeting', 'Greeting'),
+                    ('mode_selection', 'Mode Selection'),
+                    ('identity_check', 'Identity Check'),
+                    ('unknown_caller_choice', 'Unknown Caller Choice'),
+                    ('intake', 'Intake'),
+                    ('conversation', 'Conversation'),
+                    ('summary_confirm', 'Summary Confirm'),
+                    ('ended', 'Ended'),
+                ],
+                db_index=True,
+                default='greeting',
+                max_length=50,
+            ),
+        ),
+    ]
