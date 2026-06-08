@@ -102,6 +102,7 @@ async def _send_notification_async(summary_id):
             summary_text=summary.summary_text,
             phone=summary.call.from_number,
             email=None,
+            call_id=summary.call.id,
         )
         if success:
             summary.delivery_status = "sent"

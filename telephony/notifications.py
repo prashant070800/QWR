@@ -44,7 +44,7 @@ async def mock_deliver_notification(summary_text: str, phone: str | None = None,
     return True
 
 
-async def dispatch_summary_notification(summary_text: str, phone: str | None = None, email: str | None = None) -> bool:
+async def dispatch_summary_notification(summary_text: str, phone: str | None = None, email: str | None = None, call_id: int | None = None) -> bool:
     """
     Dispatch call summary notification.
     Tries Telegram first, and falls back to mock email/SMS delivery if Telegram is not configured or fails.
@@ -52,10 +52,16 @@ async def dispatch_summary_notification(summary_text: str, phone: str | None = N
     # 1. Prepare message formatting
     import html
     escaped_summary = html.escape(summary_text)
+    # This is forwarding to qwr
+    # https://questionwhatsreal.com/dashboard/call/15/
+    # TODO: 
+    dashboard_link = f"{settings.qwr_website_url.rstrip('/')}/dashboard/call/{call_id}/" if call_id and settings.qwr_website_url else ""
+    link_html = f"\n\n🔗 <a href='{dashboard_link}'>View Full Call Detail & Transcript</a>" if dashboard_link else ""
+
     formatted_msg = (
         f"<b>QWR Call Summary</b>\n"
         f"<b>From:</b> {phone or 'Unknown'}\n\n"
-        f"{escaped_summary}"
+        f"{escaped_summary}{link_html}"
     )
 
     # 2. Try Telegram first

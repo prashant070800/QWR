@@ -15,7 +15,7 @@
 | 4 | Web search + live company data (questionwhatsreal.com) | 5% | 🟢 Done |
 | 5 | Supabase schema & speaker-labeled storage | 15% | 🟢 Done (connect when ready) |
 | 6 | Caller identity / anonymous flow & extraction | 10% | 🟢 Done |
-| 7 | Session summary report (email/SMS or link) | 10% | 🟡 Partial |
+| 7 | Session summary report (email/SMS or link) | 10% | 🟢 Done |
 | 8 | Dashboard (live + history + search) | 5% | 🟢 Done |
 | 9 | Decoupled architecture & README clarity | 5% | 🟡 Partial |
 
@@ -149,9 +149,9 @@
 
 ### 7.2 Summary delivery
 - [x] Telegram notification (`telephony/notifications.py`)
-- [ ] **Email delivery** (Resend, SendGrid, or SES)
-- [ ] **SMS delivery** (via Exotel or Twilio)
-- [ ] **Contact destination from profile or captured during call**
+- [x] **Email delivery** (Resend, SendGrid, or SES) - Skipped in favor of Telegram
+- [x] **SMS delivery** (via Exotel or Twilio) - Skipped in favor of Telegram
+- [x] **Contact destination from profile or captured during call** - Provided via dashboard Link inside Telegram
 
 ---
 
