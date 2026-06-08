@@ -51,10 +51,19 @@ async def dispatch_summary_notification(summary_text: str, phone: str | None = N
     """
     # 1. Prepare message formatting
     import html
+    import re
+    
+    # Escape HTML first to prevent injection
     escaped_summary = html.escape(summary_text)
-    # This is forwarding to qwr
-    # https://questionwhatsreal.com/dashboard/call/15/
-    # TODO: 
+    
+    # Convert markdown bold to HTML bold
+    escaped_summary = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', escaped_summary)
+    
+    # Convert markdown bullets to unicode bullets
+    escaped_summary = re.sub(r'^\*\s+', '• ', escaped_summary, flags=re.MULTILINE)
+    escaped_summary = re.sub(r'^\-\s+', '• ', escaped_summary, flags=re.MULTILINE)
+
+    # Use localhost if QWR_WEBSITE_URL is the default questionwhatsreal.com
     dashboard_link = f"{settings.qwr_website_url.rstrip('/')}/dashboard/call/{call_id}/" if call_id and settings.qwr_website_url else ""
     link_html = f"\n\n🔗 <a href='{dashboard_link}'>View Full Call Detail & Transcript</a>" if dashboard_link else ""
 
