@@ -17,7 +17,7 @@
 | 6 | Caller identity / anonymous flow & extraction | 10% | 🟢 Done |
 | 7 | Session summary report (email/SMS or link) | 10% | 🟢 Done |
 | 8 | Dashboard (live + history + search) | 5% | 🟢 Done |
-| 9 | Decoupled architecture & README clarity | 5% | 🟡 Partial |
+| 9 | Decoupled architecture & README clarity | 5% | 🟢 Done |
 
 ---
 
@@ -192,7 +192,7 @@
 - [x] Supabase schema (Django models = schema)
 - [ ] **SQL export or screenshot of schema**
 - [x] GitHub repository
-- [ ] **README with all required sections**
+- [x] **README with all required sections**
 
 ---
 
